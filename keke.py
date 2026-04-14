@@ -339,6 +339,26 @@ def generar_menu_interfaces():
 # ==========================================
 # GESTIÓN DE AUDITORÍA INALÁMBRICA (WIFI)
 # ==========================================
+def habilitar_modo_monitor(interfaz):
+    """Mata procesos conflictivos y levanta la interfaz en modo monitor"""
+    print(f"[*] Preparando la interfaz {interfaz} para modo monitor...")
+    os.system("sudo airmon-ng check kill")
+    os.system(f"sudo airmon-ng start {interfaz}")
+    print(f"\n[+] Interfaz configurada. Normalmente cambia de nombre (ej. {interfaz}mon o wlan0mon).")
+    print("\nVerifica el nuevo nombre con ifconfig o en el menú de selección.")
+
+def generar_menu_monitor():
+    """Genera menú con interfaces disponibles para poner en modo monitor"""
+    menu = Menu("ACTIVAR MODO MONITOR")
+    interfaces = obtener_interfaces() 
+    if not interfaces:
+        menu.agregar_opcion("No se encontraron interfaces", AccionBash("Error", "echo 'No hay interfaces de red detectadas.'"))
+        return menu
+    for iface in interfaces:
+        menu.agregar_opcion(f"Poner {iface} en modo monitor", AccionPython(f"Monitor {iface}", habilitar_modo_monitor, iface))
+    return menu
+
+# --- NUEVA LÓGICA DE CAPTURA CON MENÚS DINÁMICOS Y SIN GUI ---
 
 def iniciar_ataque_y_generar_menu(interfaz, target, station):
     """Submenú 4: Menú interactivo de ataque que mantiene airodump-ng en segundo plano"""
@@ -496,6 +516,7 @@ def generar_menu_carpetas_wifi():
         menu.agregar_opcion(f"{carpeta}", AccionMenuDinamico(carpeta, lambda r=ruta_carpeta: generar_menu_archivos_wifi(r)))
     
     return menu
+
 
 # ==========================================
 # 6. ÁRBOL DE MENÚS Y COMPILACIÓN
