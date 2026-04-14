@@ -358,7 +358,6 @@ def generar_menu_monitor():
         menu.agregar_opcion(f"Poner {iface} en modo monitor", AccionPython(f"Monitor {iface}", habilitar_modo_monitor, iface))
     return menu
 
-# --- NUEVA LÓGICA DE CAPTURA CON MENÚS DINÁMICOS Y SIN GUI ---
 
 def iniciar_ataque_y_generar_menu(interfaz, target, station):
     """Submenú 4: Menú interactivo de ataque que mantiene airodump-ng en segundo plano"""
@@ -478,7 +477,7 @@ def generar_menu_interfaces_captura():
 
 
 # ==========================================
-# EXPLORADOR DE HANDSHAKES (Ranger Eliminado)
+# EXPLORADOR DE HANDSHAKES
 # ==========================================
 def generar_menu_archivos_wifi(ruta_carpeta):
     nombre_carpeta = os.path.basename(ruta_carpeta)
@@ -518,7 +517,7 @@ def generar_menu_carpetas_wifi():
     return menu
 
 #==========================================
-#GESTIÓN DE EVIL TWIN + DEAUTH (OPTIMIZADO)
+#GESTIÓN DE EVIL TWIN + DEAUTH
 #==========================================
 EVIL_STATE = {
     "station_iface": None,
