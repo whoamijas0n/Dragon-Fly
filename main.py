@@ -276,17 +276,22 @@ class RedTeamApp(ctk.CTk):
         sel_frame.pack(pady=5)
         ctk.CTkLabel(sel_frame, text="Interfaz: ").pack(side="left")
         ctk.CTkOptionMenu(sel_frame, variable=self.interfaz_seleccionada, values=interfaces, 
-                          fg_color=COLOR_BOTON_ROJO, button_color=COLOR_BOTON_HOVER).pack(side="left")
+                        fg_color=COLOR_BOTON_ROJO, button_color=COLOR_BOTON_HOVER).pack(side="left")
         
-        iface = self.interfaz_seleccionada.get()
         ctk.CTkButton(self.main_frame, text="Ver Estado", fg_color=COLOR_BOTON_ROJO, hover_color=COLOR_BOTON_HOVER, width=300,
-                     command=lambda: self.ejecutar_comando(f"sudo macchanger -s {iface}")).pack(pady=5)
+                    command=lambda: self.ejecutar_comando(f"sudo macchanger -s {self.interfaz_seleccionada.get()}")).pack(pady=5)
         ctk.CTkButton(self.main_frame, text="MAC Random", fg_color=COLOR_BOTON_ROJO, hover_color=COLOR_BOTON_HOVER, width=300,
-                     command=lambda: self.ejecutar_comando(f"sudo ifconfig {iface} down && sudo macchanger -r {iface} && sudo ifconfig {iface} up")).pack(pady=5)
+                    command=lambda: self.ejecutar_comando(
+                        f"sudo ifconfig {self.interfaz_seleccionada.get()} down && sudo macchanger -r {self.interfaz_seleccionada.get()} && sudo ifconfig {self.interfaz_seleccionada.get()} up")
+                    ).pack(pady=5)
         ctk.CTkButton(self.main_frame, text="Reset Original", fg_color=COLOR_BOTON_ROJO, hover_color=COLOR_BOTON_HOVER, width=300,
-                     command=lambda: self.ejecutar_comando(f"sudo ifconfig {iface} down && sudo macchanger -p {iface} && sudo ifconfig {iface} up")).pack(pady=5)
+                    command=lambda: self.ejecutar_comando(
+                        f"sudo ifconfig {self.interfaz_seleccionada.get()} down && sudo macchanger -p {self.interfaz_seleccionada.get()} && sudo ifconfig {self.interfaz_seleccionada.get()} up")
+                    ).pack(pady=5)
         ctk.CTkButton(self.main_frame, text="MAC Mismo Fabricante", fg_color=COLOR_BOTON_ROJO, hover_color=COLOR_BOTON_HOVER, width=300,
-                     command=lambda: self.ejecutar_comando(f"sudo ifconfig {iface} down && sudo macchanger -a {iface} && sudo ifconfig {iface} up")).pack(pady=5)
+                    command=lambda: self.ejecutar_comando(
+                        f"sudo ifconfig {self.interfaz_seleccionada.get()} down && sudo macchanger -a {self.interfaz_seleccionada.get()} && sudo ifconfig {self.interfaz_seleccionada.get()} up")
+                    ).pack(pady=5)
         self.mostrar_consola()
 
     # ==========================================
