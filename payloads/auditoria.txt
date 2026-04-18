@@ -1,0 +1,15 @@
+REM Payload de Auditoría de Sistema
+GUI
+DELAY 1000
+STRING terminal
+ENTER
+REM Esperamos a que la terminal cargue el prompt
+DELAY 1500
+STRING echo "--- REPORTE DE USUARIO ---" && whoami
+ENTER
+DELAY 500
+STRING echo "--- SISTEMA OPERATIVO ---" && uname -a
+ENTER
+DELAY 500
+STRING echo "--- TIEMPO ENCENDIDO ---" && uptime
+ENTER

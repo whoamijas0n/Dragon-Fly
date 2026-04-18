@@ -1,0 +1,10 @@
+REM Abrir Mousepad en Kali
+GUI
+DELAY 1000
+STRING mousepad
+ENTER
+REM Pausa larga para que cargue la ventana
+DELAY 3000
+STRING Hola desde el Rubber Ducky en Kali!
+ENTER
+STRING Esto si existe aqui JAJAJA.
