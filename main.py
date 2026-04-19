@@ -29,7 +29,7 @@ class RedTeamApp(ctk.CTk):
     def __init__(self):
         super().__init__()
 
-        self.title("KEKE ZERO - RED TEAM TOOLBOX")
+        self.title("DRAGON FLY - RED TEAM TOOLBOX")
         
         self.withdraw() 
         ancho = self.winfo_screenwidth()
@@ -74,19 +74,20 @@ class RedTeamApp(ctk.CTk):
         # Sidebar
         self.sidebar_frame = ctk.CTkFrame(self, width=220, corner_radius=15, fg_color=COLOR_FONDO_SIDEBAR)
         self.sidebar_frame.grid(row=0, column=0, padx=10, pady=10, sticky="nsew")
-        self.sidebar_frame.grid_rowconfigure(7, weight=1)
+        self.sidebar_frame.grid_rowconfigure(8, weight=1)
 
-        self.logo_label = ctk.CTkLabel(self.sidebar_frame, text="KEKE ZERO\nSYSTEM", 
+        self.logo_label = ctk.CTkLabel(self.sidebar_frame, text="DRAGON FLY\nSYSTEM", 
                                      font=ctk.CTkFont(size=22, weight="bold"), text_color="#ff4d4d")
         self.logo_label.grid(row=0, column=0, padx=20, pady=(20, 15))
 
         # Botones del menú principal
-        self.btn_nmap = self.crear_boton_menu("1. Reconocimiento", self.show_recon_menu, 1)
-        self.btn_mac = self.crear_boton_menu("2. MAC Changer", self.show_mac_menu, 2)
-        self.btn_wifi = self.crear_boton_menu("3. Auditoría WiFi", self.show_wifi_menu, 3)
-        self.btn_bluetooth = self.crear_boton_menu("4. Bluetooth BLE", self.show_bluetooth_menu, 4)
-        self.btn_ducky = self.crear_boton_menu("5. Rubber Ducky", self.show_ducky_menu, 5)
-        self.btn_utils = self.crear_boton_menu("6. Utilidades OS", self.show_utils_menu, 6)
+        self.btn_inicio = self.crear_boton_menu("0. Inicio", self.show_inicio_menu, 1)
+        self.btn_nmap = self.crear_boton_menu("1. Reconocimiento", self.show_recon_menu, 2)
+        self.btn_mac = self.crear_boton_menu("2. MAC Changer", self.show_mac_menu, 3)
+        self.btn_wifi = self.crear_boton_menu("3. Auditoría WiFi", self.show_wifi_menu, 4)
+        self.btn_bluetooth = self.crear_boton_menu("4. Bluetooth BLE", self.show_bluetooth_menu, 5)
+        self.btn_ducky = self.crear_boton_menu("5. Rubber Ducky", self.show_ducky_menu, 6)
+        self.btn_utils = self.crear_boton_menu("6. Utilidades OS", self.show_utils_menu, 7)
 
         # Frame principal (scrollable)
         self.main_frame = ctk.CTkScrollableFrame(self, corner_radius=15, fg_color=COLOR_FONDO_PRINCIPAL)
@@ -95,7 +96,7 @@ class RedTeamApp(ctk.CTk):
         # Botón "Atrás" (inicialmente oculto)
         self.back_btn = None
 
-        self.show_recon_menu()
+        self.show_inicio_menu()
 
     def crear_boton_menu(self, texto, comando, fila):
         boton = ctk.CTkButton(self.sidebar_frame, text=texto, command=comando,
@@ -152,6 +153,102 @@ class RedTeamApp(ctk.CTk):
             except Exception as e:
                 self.escribir_consola(f"\n[!] ERROR: {e}")
         threading.Thread(target=run, daemon=True).start()
+
+
+
+        # ===================================================
+        # INICIO DRAGON FLY
+        # ===================================================
+
+    def show_inicio_menu(self):
+        """Pantalla de inicio con bienvenida y ASCII art en rojo."""
+        self.limpiar_main_frame()
+        
+        # Contenedor principal centrado
+        container = ctk.CTkFrame(self.main_frame, fg_color="transparent")
+        container.pack(expand=True, fill="both", padx=20, pady=20)
+        
+        # Título de bienvenida
+        titulo = ctk.CTkLabel(
+            container,
+            text="BIENVENIDO AL SISTEMA DRAGON FLY",
+            font=ctk.CTkFont(size=28, weight="bold"),
+            text_color="#ff4d4d"
+        )
+        titulo.pack(pady=(30, 10))
+        
+        # Subtítulo
+        subtitulo = ctk.CTkLabel(
+            container,
+            text="Red Team Toolbox - Auditoría y Pentesting",
+            font=ctk.CTkFont(size=16),
+            text_color="#aaaaaa"
+        )
+        subtitulo.pack(pady=(0, 30))
+        
+        # Arte ASCII en color rojo (fuente monoespaciada para preservar el formato)
+        ascii_art = r"""
+
+                                                                                                                                                                                  
+                                                                              ▒▒                      ░░░░                                                                              
+                                                                                ░░                    ▒▒                                                                                
+                                                                                ░░░░      ▒▒▓▓      ▒▒░░                                                                                
+                                                                                  ▒▒    ▒▒▒▒▒▒▒▒    ▓▓                                                                                  
+                                                                                  ░░▒▒  ▒▒▒▒▒▒▒▒  ▒▒░░  ░░                                                                              
+                                  ░░░░░░░░░░░░░░                                ░░    ▒▒▒▒░░▒▒░░▒▒  ░░▒▒                  ░░░░░░░░░░░░░░░░░░░░░░                                        
+                      ░░░░▒▒▒▒░░░░▒▒▒▒▒▒▒▒▒▒▒▒░░░░░░░░▒▒░░░░░░░░░░░░░░░░░░        ▒▒    ▒▒████▓▓░░░░░░      ░░░░░░░░░░░░░░░░▒▒▓▓▓▓▒▒▒▒▓▓▒▒▒▒▒▒▒▒░░▒▒░░░░░░░░░░░░                        
+              ░░████▓▓▒▒░░▓▓▒▒▒▒░░▒▒░░░░░░░░▒▒▒▒░░░░▒▒▒▒░░▒▒██▓▓░░▓▓▒▒▒▒▒▒▒▒░░░░░░░░▒▒▒▒▒▒▒▒▒▒░░▓▓░░░░░░░░░░▓▓▒▒▒▒▓▓▒▒░░▒▒░░░░░░▒▒  ░░░░▒▒▒▒░░░░░░▒▒▒▒▒▒▓▓▓▓▒▒▒▒▒▒░░██▓▓▒▒░░            
+        ░░░░░░░░░░▓▓▒▒░░░░░░▓▓▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒  ░░▓▓▓▓▒▒░░░░░░░░▒▒░░▒▒░░░░░░▓▓▓▓▓▓▒▒▒▒░░▓▓▓▓░░▒▒▒▒▒▒▒▒░░▒▒▒▒▒▒▒▒▒▒░░░░░░░░▓▓▓▓░░░░▒▒░░░░░░░░░░▒▒▒▒▒▒▒▒░░░░░░▒▒▒▒▒▒░░░░▒▒░░░░░░        
+      ░░░░░░░░░░▓▓▒▒▒▒▓▓  ░░▒▒░░▒▒░░▒▒░░▒▒▓▓██▓▓████▒▒▒▒▒▒░░▒▒▒▒░░░░░░░░░░░░░░▒▒▒▒░░▒▒▒▒░░▓▓▓▓░░▒▒▒▒▒▒░░▒▒░░░░░░░░░░░░░░▒▒▒▒▓▓░░▓▓████░░░░░░░░▒▒▒▒▒▒▒▒░░░░░░▓▓▒▒▓▓░░░░░░░░░░░░░░░░      
+      ░░▒▒▒▒▒▒░░▒▒▒▒▓▓▒▒▒▒▒▒▒▒▒▒▒▒░░░░▒▒░░░░▒▒▒▒▓▓██▓▓▒▒░░░░░░▒▒░░░░░░▒▒░░░░▒▒▒▒▒▒▒▒░░▒▒░░▒▒▒▒░░▒▒▒▒░░▒▒▒▒▒▒▒▒░░▒▒▒▒░░░░▒▒░░░░▓▓▓▓▓▓▓▓▒▒░░▒▒▒▒░░▒▒▒▒░░░░▒▒░░▒▒▓▓▒▒░░░░░░░░░░░░░░░░░░    
+      ░░░░░░░░░░▒▒▒▒▒▒░░░░▒▒▒▒░░▒▒▒▒▒▒░░▒▒▒▒░░▓▓▒▒▒▒▒▒▒▒░░░░░░░░▒▒░░▒▒▒▒░░▒▒░░▒▒▓▓▒▒▒▒▒▒░░▓▓▒▒░░▒▒▒▒░░▒▒▒▒▒▒▒▒▒▒▒▒░░░░▒▒░░░░▒▒▒▒░░▒▒▓▓▒▒▒▒░░▒▒░░░░░░░░░░▒▒▒▒░░▒▒▓▓░░▒▒▒▒▒▒░░░░░░░░      
+        ░░░░░░▒▒░░░░░░▒▒░░░░▒▒░░▒▒▒▒▒▒▒▒▒▒░░░░▒▒░░░░░░▒▒░░▓▓▓▓▒▒░░░░░░▒▒▒▒▒▒▒▒▒▒░░░░░░▓▓░░▒▒▒▒░░▓▓░░▒▒▒▒░░▒▒▒▒▒▒▒▒▒▒▒▒▒▒░░▒▒▒▒▓▓▒▒░░▒▒▒▒░░▒▒▒▒░░░░▒▒░░▒▒▒▒▒▒▒▒░░░░▒▒▒▒░░░░░░░░░░        
+            ░░░░▒▒░░▒▒░░▒▒▒▒▒▒░░░░▓▓▒▒░░░░░░▒▒▒▒▒▒▓▓░░░░░░░░░░░░▒▒▓▓▓▓▒▒▒▒▒▒░░░░▒▒▒▒▒▒▒▒░░▓▓▓▓▒▒▓▓░░▒▒░░░░▒▒░░▒▒▓▓▓▓▒▒▒▒▒▒▓▓▓▓░░▒▒░░░░▒▒▓▓▒▒▒▒░░░░▒▒▒▒░░▒▒▒▒░░▒▒▒▒▒▒▒▒▒▒▒▒▒▒░░          
+                ░░░░░░▒▒▒▒░░░░▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒░░░░▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒██▓▓░░▒▒░░░░▒▒░░░░░░░░▒▒▒▒▒▒▒▒░░░░░░░░▒▒▒▒▒▒▒▒▒▒▒▒░░░░▒▒▓▓██▒▒▒▒▒▒▒▒▓▓▒▒░░▓▓▒▒▒▒▒▒░░░░░░░░▒▒▒▒▒▒▒▒▒▒▒▒░░              
+                      ░░░░░░░░░░░░░░▒▒▒▒▓▓██▓▓▓▓▒▒▓▓▓▓▓▓▓▓▓▓▓▓▒▒▒▒▓▓▒▒░░░░▒▒▒▒▒▒▒▒▓▓▒▒  ░░▓▓▒▒░░  ░░▒▒▒▒░░▒▒▒▒░░░░░░▓▓▓▓▒▒▓▓▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▓▓▓▓▒▒▓▓▒▒▒▒▒▒░░░░░░░░░░                    
+                                  ░░░░░░░░░░░░░░░░▒▒░░▒▒▒▒▒▒▒▒▓▓▒▒░░░░░░▒▒░░▒▒▒▒▓▓▓▓░░    ▒▒▒▒    ░░▓▓▓▓▒▒░░░░▒▒▒▒▒▒░░▒▒▒▒▓▓▒▒▒▒▓▓░░▒▒▒▒▒▒▒▒░░░░░░░░░░░░░░░░                            
+                                            ░░░░▒▒▒▒▒▒▒▒▒▒▒▒▒▒░░░░▒▒▒▒▒▒▒▒░░▒▒▒▒▓▓░░      ▒▒▒▒      ░░▒▒▒▒▒▒▒▒░░▒▒▒▒▒▒▒▒░░░░▓▓▒▒▒▒▒▒▓▓▒▒▒▒▒▒░░░░░░                                      
+                                        ░░▒▒▒▒▒▒▓▓▓▓▒▒▓▓▓▓▒▒░░▒▒▒▒▒▒░░▒▒▒▒▒▒▓▓▓▓░░        ▒▒▒▒        ░░░░▓▓▓▓▒▒░░░░░░▒▒▒▒░░░░▒▒▒▒▒▒▒▒░░▓▓▓▓▓▓▒▒░░░░░░                                  
+                                  ░░▒▒▒▒▓▓▓▓▓▓▒▒▒▒▒▒░░▒▒▓▓▒▒░░░░▒▒▒▒░░░░▒▒▒▒▒▒░░          ▒▒▒▒            ░░░░▒▒▓▓▒▒░░▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▓▓▓▓▒▒▒▒░░░░░░░░                              
+                              ░░▒▒▒▒▒▒▒▒▓▓▒▒░░▓▓▓▓▒▒▒▒▒▒░░▒▒▒▒▒▒░░▒▒▒▒▒▒▓▓░░              ▒▒░░                ░░▒▒▓▓▒▒▒▒░░░░▒▒▒▒░░▒▒▒▒▒▒▒▒▓▓▓▓▒▒░░░░▒▒░░▒▒▒▒░░                          
+                        ░░░░▒▒▒▒▒▒▓▓▒▒▒▒▓▓▒▒▓▓██████▓▓░░▒▒▓▓░░▒▒▒▒▓▓▒▒░░░░                ▓▓                    ░░░░▓▓▓▓▒▒░░░░▒▒▒▒░░▒▒▒▒▒▒░░░░▒▒▒▒▒▒▒▒▒▒▒▒░░▒▒░░░░                      
+                    ░░░░░░▒▒▒▒▒▒▒▒░░▒▒▒▒▒▒██▓▓▓▓▓▓▓▓▒▒░░▒▒▒▒░░▒▒▒▒▒▒░░                    ▒▒░░                      ░░▒▒▒▒▒▒▒▒▒▒░░▒▒░░▓▓████▒▒▒▒▒▒▒▒▒▒░░░░░░░░░░░░░░                    
+                ▒▒░░▒▒▒▒▓▓▒▒▒▒▒▒▒▒▓▓▒▒▒▒░░░░▒▒██▓▓░░▒▒▒▒▒▒▓▓▓▓▒▒░░                        ▒▒░░                          ░░▓▓▒▒░░▒▒░░▒▒░░▓▓████▓▓▒▒▒▒▒▒▒▒░░░░░░░░▒▒░░░░░░                
+            ▒▒██░░░░░░▒▒▒▒▒▒▒▒▒▒▒▒▒▒▓▓▒▒▒▒░░████░░░░▒▒▒▒▒▒▓▓░░░░                          ▓▓                              ░░░░▓▓▓▓▒▒░░░░░░████▓▓▒▒▒▒▓▓▓▓▒▒░░░░░░▒▒▒▒▒▒░░██▒▒            
+        ░░░░▒▒  ▒▒░░░░▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▓▓▓▓░░▒▒▒▒░░▒▒▓▓▓▓░░░░                              ▓▓░░                                ░░░░▓▓▒▒▒▒░░░░▒▒▒▒▒▒▒▒▒▒▓▓▒▒▒▒░░░░░░▒▒░░  ▒▒▒▒██░░        
+      ░░▒▒░░░░  ▒▒░░░░▒▒▒▒▒▒▒▒▒▒▒▒▒▒▓▓▓▓▒▒░░▒▒▒▒▓▓▒▒░░░░                                  ▓▓                                      ░░▒▒▒▒▓▓▓▓▒▒▒▒▓▓▒▒▒▒▓▓▒▒▒▒░░░░░░▒▒░░░░░░▒▒░░░░░░      
+      ░░░░░░░░▒▒░░░░▒▒░░▒▒▒▒▒▒▒▒▒▒░░▒▒░░░░▒▒░░▒▒░░░░                                      ▓▓                                          ░░░░░░░░░░▒▒▒▒▒▒▓▓▒▒▒▒░░░░▒▒▒▒  ░░░░░░░░  ▓▓░░    
+            ░░░░░░░░░░░░░░  ░░░░░░░░░░░░                                                  ▒▒░░                                              ░░░░░░░░░░▒▒▒▒░░▒▒▒▒▒▒▒▒░░  ▒▒▒▒░░▒▒░░      
+                                                                                          ▓▓                                                            ░░▒▒▒▒░░░░░░░░░░░░░░░░░░        
+                                                                                          ▒▒                                                                          ░░                
+                                                                                          ▓▓                                                                                            
+                                                                                          ▓▓                                                                                            
+                                                                                          ▒▒                                                                                            
+                                                                                          ▓▓░░                                                                                          
+                                                                                          ▓▓░░                                                                                          
+                                                                                          ▒▒░░                                                                                          
+        """
+        
+        ascii_label = ctk.CTkLabel(
+            container,
+            text=ascii_art,
+            font=ctk.CTkFont(family="Courier", size=14, weight="bold"),
+            text_color="#ff4d4d",      # Rojo intenso
+            justify="center"
+        )
+        ascii_label.pack(pady=10)
+        
+        # Línea decorativa
+        ctk.CTkFrame(container, height=2, fg_color="#ff4d4d").pack(fill="x", padx=50, pady=20)
+        
+        # Pie de página
+        footer = ctk.CTkLabel(
+            container,
+            text="Selecciona una herramienta del menú lateral para comenzar.",
+            font=ctk.CTkFont(size=14),
+            text_color="#888888"
+        )
+        footer.pack(pady=20)
 
     # ==========================================
     # MENÚ RECONOCIMIENTO (NMAP)
