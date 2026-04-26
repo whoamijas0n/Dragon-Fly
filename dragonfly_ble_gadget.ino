@@ -1,838 +1,530 @@
 /*
- * ════════════════════════════════════════════════════════════════════════════
- *  DRAGON FLY BLE GADGET v1.0
- *  Firmware para ESP32 + 2× nRF24L01+PA+LNA + OLED SSD1306
- * ════════════════════════════════════════════════════════════════════════════
+ * DRAGON FLY BLE GADGET v1.0
+ * Firmware para ESP32 con dos módulos nRF24L01+ (HSPI y VSPI) y OLED SSD1306.
+ * Protocolo serie (115200 baud) compatible con gadget_handler.py.
+ * 
+ * Conexiones:
+ *   OLED: SDA=4, SCL=5, VCC=3.3V, GND=GND
+ *   nRF0 (HSPI): CE=16, CSN=15, SCK=14, MISO=12, MOSI=13
+ *   nRF1 (VSPI): CE=22, CSN=21, SCK=18, MISO=19, MOSI=23
+ *   Ambos comparten VCC(3.3V) y GND.
  *
- *  Controlado vía puerto serie USB a 115200 baud desde Raspberry Pi.
- *  Compatible con gadget_handler.py (Python / pyserial).
- *
- *  PROTOCOLO DE COMANDOS (líneas terminadas en \n):
- *  ─────────────────────────────────────────────────────────────────────────
- *  SCAN <mod> <seg>             → SCANNING_STARTED
- *                                 DEVICE:<mac>,<rssi>,<nombre>  (múltiples)
- *                                 SCAN_DONE | STOPPED
- *
- *  STOP <mod>                   → STOPPED
- *
- *  ADVERTISE <mod> <mensaje>    → ADVERTISING_STARTED
- *
- *  BEACON_FLOOD <mod> <n> <ms>  → FLOODING_STARTED
- *                                 FLOOD_DONE (si n > 0 y terminó)
- *
- *  JAM <mod> <canal> <seg>      → JAMMING_STARTED   [stub, sin RF]
- *                                 JAM_DONE | STOPPED
- *
- *  SWEEP_JAM <mod> <seg>        → SWEEP_JAMMING_STARTED  [stub, sin RF]
- *                                 SWEEP_DONE | STOPPED
- *
- *  STATUS                       → MOD0:<estado> MOD1:<estado>
- *
- *  CONEXIONES DE HARDWARE:
- *  ─────────────────────────────────────────────────────────────────────────
- *  OLED SSD1306 (I2C):  SDA→GPIO4   SCL→GPIO5   VCC→3.3 V  GND→GND
- *  nRF24 #0 (HSPI):     SCK→GPIO14  MISO→GPIO12 MOSI→GPIO13
- *                        CSN→GPIO15  CE→GPIO16   VCC→3.3 V  GND→GND
- *  nRF24 #1 (VSPI):     SCK→GPIO18  MISO→GPIO19 MOSI→GPIO23
- *                        CSN→GPIO21  CE→GPIO22   VCC→3.3 V  GND→GND
- *
- *  LIBRERÍAS REQUERIDAS (instalar desde el gestor de librerías de Arduino):
- *    • RF24   de TMRh20  ≥ 1.4.7
- *    • U8g2   de olikraus ≥ 2.35
- *
- *  NOTAS DE DISEÑO:
- *    • Las funciones JAM y SWEEP_JAM son stubs intencionales: responden el
- *      protocolo correctamente para compatibilidad con gadget_handler.py,
- *      pero NO emiten portadora de RF (startConstCarrier omitido por
- *      restricciones legales de interferencia de RF).
- *    • Todo el loop es no bloqueante (sin delay()); se usan millis() y
- *      máquinas de estado.
- *    • Implementación BLE sobre nRF24 basada en la técnica de Dmitry Grinberg
- *      (reversión de bits, data-whitening BLE, CRC24 BLE).
- * ════════════════════════════════════════════════════════════════════════════
+ * Dependencias:
+ *   - RF24 by TMRh20   (https://github.com/nRF24/RF24)
+ *   - U8g2 by olikraus (https://github.com/olikraus/u8g2)
  */
 
 #include <SPI.h>
 #include <Wire.h>
-#include <RF24.h>
 #include <U8g2lib.h>
+#include <RF24.h>
 
-// ╔══════════════════════════════════════════════════════════════════════════╗
-// ║  PINES                                                                   ║
-// ╚══════════════════════════════════════════════════════════════════════════╝
+// ========================== CONFIGURACIÓN DE PINES ==========================
+// OLED
+#define OLED_SDA  4
+#define OLED_SCL  5
 
-#define PIN_OLED_SDA  4
-#define PIN_OLED_SCL  5
+// Módulo 0 (HSPI)
+#define HSPI_SCK  14
+#define HSPI_MISO 12
+#define HSPI_MOSI 13
+#define NRF0_CE   16
+#define NRF0_CSN  15
 
-#define PIN_CE0       16    // nRF24 #0  Chip Enable
-#define PIN_CSN0      15    // nRF24 #0  Chip Select
-#define PIN_SCK0      14    // HSPI SCK
-#define PIN_MISO0     12    // HSPI MISO
-#define PIN_MOSI0     13    // HSPI MOSI
+// Módulo 1 (VSPI)
+#define VSPI_SCK  18
+#define VSPI_MISO 19
+#define VSPI_MOSI 23
+#define NRF1_CE   22
+#define NRF1_CSN  21
 
-#define PIN_CE1       22    // nRF24 #1  Chip Enable
-#define PIN_CSN1      21    // nRF24 #1  Chip Select
-#define PIN_SCK1      18    // VSPI SCK
-#define PIN_MISO1     19    // VSPI MISO
-#define PIN_MOSI1     23    // VSPI MOSI
+// ========================== CLASE BLE MÍNIMA ==========================
+class BLERadio {
+public:
+  BLERadio(RF24& radio) : _radio(radio) {}
 
-// ╔══════════════════════════════════════════════════════════════════════════╗
-// ║  CONSTANTES BLE                                                          ║
-// ╚══════════════════════════════════════════════════════════════════════════╝
+  void begin() {
+    _radio.begin();
+    _radio.setDataRate(RF24_250KBPS);
+    _radio.setCRCLength(RF24_CRC_DISABLED); // BLE ya lleva su propio CRC
+    _radio.setAutoAck(false);
+    _radio.setPALevel(RF24_PA_MAX);
+    _radio.setAddressWidth(4);
 
-/*
- *  Mapeo de canales BLE de advertising → canal RF24.
- *  RF24 usa frecuencias de 2400 + N MHz (canal 0–125).
- *    BLE ch37 = 2402 MHz → RF24 ch  2
- *    BLE ch38 = 2426 MHz → RF24 ch 26
- *    BLE ch39 = 2480 MHz → RF24 ch 80
- */
-static const uint8_t kBleRfCh[3]  = {2, 26, 80};
-static const uint8_t kBleAdvCh[3] = {37, 38, 39};  // Número real de canal BLE (para whitening)
+    // Dirección de acceso BLE (0x8E89BED6) en little‑endian
+    uint8_t addr[4] = {0xD6, 0xBE, 0x89, 0x8E};
+    _radio.openReadingPipe(0, addr);
+    _radio.openWritingPipe(addr);
+    _radio.startListening();
+  }
 
-/*
- *  Access Address de advertising BLE: 0x8E89BED6.
- *  Para que el nRF24 lo reconozca, cada byte se invierte bit a bit:
- *    D6 → 6B,  BE → 7D,  89 → 91,  8E → 71
- *  Ref: Dmitry Grinberg – "Faking Bluetooth LE with nRF24L01+"
- */
-static const uint8_t kBleAddrNrf[4] = {0x6B, 0x7D, 0x91, 0x71};
+  // Canal BLE (0‑39) -> canal RF (2‑41‑..‑80)
+  void setChannel(int ble_channel) {
+    int rf_ch = 2 + ble_channel;
+    _radio.stopListening();
+    _radio.setChannel(rf_ch);
+    _radio.startListening();
+  }
 
-// Intervalos de temporización (ms)
-#define SCAN_HOP_MS         100   // Frecuencia de cambio de canal durante escaneo
-#define ADV_INTERVAL_MS     200   // Intervalo entre paquetes de advertising
-#define OLED_REFRESH_MS     500   // Frecuencia de refresco de la OLED
+  void setMAC(const uint8_t* mac) {
+    memcpy(_adv_mac, mac, 6);
+  }
 
-// ╔══════════════════════════════════════════════════════════════════════════╗
-// ║  OBJETOS GLOBALES                                                        ║
-// ╚══════════════════════════════════════════════════════════════════════════╝
+  // Construye paquete ADV_IND con Complete Local Name
+  void createPacket(const char* name, uint8_t* packet, uint8_t& len) {
+    int nameLen = strlen(name);
+    int payloadLen = 6 + 5 + nameLen; // AdvA(6) + Flags(3) + Name(1+1+nameLen)
+    packet[0] = 0x46;                 // ADV_IND, TxAdd=1 (random)
+    packet[1] = payloadLen;
+    memcpy(packet + 2, _adv_mac, 6);  // AdvA
+    int pos = 8;
+    // Flags AD
+    packet[pos++] = 2;
+    packet[pos++] = 0x01;
+    packet[pos++] = 0x06;             // LE General Discoverable
+    // Complete Local Name AD
+    packet[pos++] = nameLen + 1;
+    packet[pos++] = 0x09;
+    memcpy(packet + pos, name, nameLen);
+    pos += nameLen;
+    len = pos;
+  }
 
-// OLED: HW I2C; los pines se asignan en setup() con Wire.begin()
+  void sendPacket(uint8_t* packet, uint8_t len) {
+    _radio.stopListening();
+    _radio.write(packet, len);
+    _radio.startListening();
+  }
+
+  bool getPacket(uint8_t* packet, uint8_t& len) {
+    if (_radio.available()) {
+      len = _radio.getDynamicPayloadSize();
+      _radio.read(packet, len);
+      _radio.flush_rx();
+      return true;
+    }
+    return false;
+  }
+
+private:
+  RF24& _radio;
+  uint8_t _adv_mac[6];
+};
+
+// ========================== OBJETOS GLOBALES ==========================
+SPIClass hspi(HSPI);  // Bus SPI2 para módulo 0
+SPIClass vspi(VSPI);  // Bus SPI3 para módulo 1
+
+RF24 radio0(NRF0_CE, NRF0_CSN, &hspi);
+RF24 radio1(NRF1_CE, NRF1_CSN, &vspi);
+
+BLERadio ble0(radio0);
+BLERadio ble1(radio1);
+
 U8G2_SSD1306_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, U8X8_PIN_NONE);
 
-// Buses SPI separados para no tener conflictos entre módulos
-SPIClass spi0(HSPI);
-SPIClass spi1(VSPI);
-
-// Objetos RF24 (CE, CSN)
-RF24 radio0(PIN_CE0, PIN_CSN0);
-RF24 radio1(PIN_CE1, PIN_CSN1);
-
-// ╔══════════════════════════════════════════════════════════════════════════╗
-// ║  MÁQUINA DE ESTADOS                                                      ║
-// ╚══════════════════════════════════════════════════════════════════════════╝
-
-enum ModState : uint8_t {
-    MOD_IDLE,
-    MOD_SCANNING,
-    MOD_ADVERTISING,
-    MOD_FLOODING,
-    MOD_JAMMING,        // stub
-    MOD_SWEEP_JAMMING   // stub
+// ========================== MÁQUINA DE ESTADOS ==========================
+enum Mode : uint8_t {
+  IDLE,
+  SCANNING,
+  ADVERTISING,
+  FLOOD,
+  JAM,
+  SWEEP
 };
 
-struct RadioModule {
-    RF24*     radio;        // Puntero al objeto RF24 asociado
-    ModState  state;        // Estado actual
-    char      tag[12];      // Etiqueta corta para OLED / STATUS
+struct Module {
+  Mode mode = IDLE;
+  unsigned long startTime = 0;
+  unsigned long lastAction = 0;
+  bool stopRequested = false;
 
-    // ── SCAN ──────────────────────────────────────────────────────────────
-    unsigned long scanStart;      // Timestamp de inicio del escaneo (ms)
-    unsigned long scanDuration;   // Duración total (ms); 0 = hasta STOP
-    uint8_t       scanChIdx;      // Índice 0-2 en kBleRfCh (canal actual)
-    unsigned long lastHop;        // Último cambio de canal (ms)
+  // SCAN
+  int scanChIdx = 0;
+  static const unsigned long scanHopMs = 200;
 
-    // ── ADVERTISE ─────────────────────────────────────────────────────────
-    char     advMsg[64];    // Mensaje personalizado
-    uint8_t  advMAC[6];     // MAC propia (aleatoria, generada una vez)
-    unsigned long lastAdv;  // Último envío de advertising (ms)
+  // ADVERTISE
+  String advMsg;
 
-    // ── FLOOD ─────────────────────────────────────────────────────────────
-    int           floodCount;     // Número de beacons a enviar (0 = infinito)
-    int           floodSent;      // Enviados hasta ahora
-    unsigned long floodInterval;  // Intervalo entre beacons (ms)
-    unsigned long lastFlood;      // Último beacon enviado (ms)
+  // FLOOD
+  int floodCount = 0;
+  int floodSent = 0;
+  unsigned long floodIntervalMs = 100;
 
-    // ── JAM / SWEEP (stub) ────────────────────────────────────────────────
-    unsigned long jamStart;       // Inicio de la operación (ms)
-    unsigned long jamDuration;    // Duración (ms); 0 = hasta STOP
+  // JAM
+  int jamChannel = 0;
+  int durationSec = 0;
+
+  // SWEEP
+  int sweepChannel = 0;
+  static const unsigned long sweepHopMs = 200;
 };
 
-RadioModule mod[2];
-
-// ╔══════════════════════════════════════════════════════════════════════════╗
-// ║  SERIAL                                                                  ║
-// ╚══════════════════════════════════════════════════════════════════════════╝
-
-static char serialBuf[256];
-static int  serialPos = 0;
-
-// ╔══════════════════════════════════════════════════════════════════════════╗
-// ║  NOMBRES PARA FLOOD                                                      ║
-// ╚══════════════════════════════════════════════════════════════════════════╝
-
-static const char* const kNames[] = {
-    "iPhone 15",  "Galaxy S24",  "Pixel 8",    "AirPods Pro",
-    "Mi Band 8",  "Fitbit",      "GalaxyWatch", "JBL Go 4",
-    "MacBook Air","ThinkPad X1", "iPad Pro",    "Kindle",
-    "Xbox Ctrl",  "PS5 Ctrl",   "Bose QC45",   "Sony WH-1000"
-};
-static const uint8_t kNamesCount = sizeof(kNames) / sizeof(kNames[0]);
-
-static unsigned long lastOledRefresh = 0;
-
-// ╔══════════════════════════════════════════════════════════════════════════╗
-// ║  UTILIDADES BLE (técnica Dmitry Grinberg)                                ║
-// ╚══════════════════════════════════════════════════════════════════════════╝
-
-/**
- * Invierte los 8 bits de un byte.
- * nRF24L01 envía los bits de cada byte en orden invertido respecto a BLE,
- * por lo que todos los bytes del paquete deben procesarse con esta función
- * antes de transmitir (TX) y después de recibir (RX).
- */
-static inline uint8_t reverseByte(uint8_t b) {
-    b = ((b & 0xF0) >> 4) | ((b & 0x0F) << 4);
-    b = ((b & 0xCC) >> 2) | ((b & 0x33) << 2);
-    b = ((b & 0xAA) >> 1) | ((b & 0x55) << 1);
-    return b;
-}
-
-/**
- * Calcula el coeficiente de whitening para un canal BLE dado.
- * Según la implementación de referencia de Dmitry Grinberg.
- */
-static uint8_t whitenCoeff(uint8_t bleCh) {
-    return reverseByte(bleCh) | 2;
-}
-
-/**
- * Aplica data-whitening BLE al buffer in-place.
- * Cada canal BLE usa una semilla diferente derivada de su número.
- * Se llama tanto antes de transmitir (TX) como después de recibir (RX)
- * (la operación es su propio inverso al ser XOR).
- */
-static void bleWhiten(uint8_t* data, uint8_t len, uint8_t bleCh) {
-    uint8_t coeff = whitenCoeff(bleCh);
-    for (uint8_t i = 0; i < len; i++) {
-        uint8_t m;
-        for (m = 1; m; m <<= 1) {
-            if (coeff & 0x80) {
-                coeff ^= 0x11;
-                data[i] ^= m;
-            }
-            coeff <<= 1;
-        }
-    }
-}
-
-/**
- * Calcula el CRC24 BLE.
- * Polinomio: x^24 + x^10 + x^9 + x^6 + x^4 + x^3 + x + 1 (0x65B).
- * Seed inicial: 0x555555.
- */
-static uint32_t bleCRC24(const uint8_t* data, uint8_t len) {
-    uint32_t crc = 0x555555;
-    while (len--) {
-        crc ^= ((uint32_t)(*data++)) << 16;
-        for (uint8_t i = 0; i < 8; i++) {
-            crc <<= 1;
-            if (crc & 0x1000000) crc ^= 0x65B;
-        }
-    }
-    return crc & 0xFFFFFF;
-}
-
-/**
- * Construye un paquete de advertising BLE completo listo para transmitir
- * con el nRF24 (con inversión de bits y whitening ya aplicados).
- *
- * Parámetros:
- *   out      : buffer de salida (mínimo 32 bytes)
- *   mac      : 6 bytes de AdvA (MAC de origen)
- *   name     : nombre del dispositivo (Complete Local Name, hasta 24 chars)
- *   chIdx    : índice 0-2 en kBleAdvCh[] (para whitening correcto)
- *
- * Retorna: longitud del paquete en bytes (máximo 32).
- *
- * Estructura interna antes de whitening/reversión:
- *   [PDU Header][PDU Len][MAC×6][AD: len, 0x09, name...][CRC×3]
- */
-static uint8_t buildAdvPacket(uint8_t* out, const uint8_t* mac,
-                               const char* name, uint8_t chIdx) {
-    uint8_t bleCh = kBleAdvCh[chIdx];
-    uint8_t namelen = (uint8_t)strlen(name);
-    if (namelen > 24) namelen = 24;
-
-    // PDU Header:
-    //   Bits [3:0] = tipo PDU: ADV_NONCONN_IND (0b0010)
-    //   Bit 6      = TxAdd = 1 (dirección aleatoria)
-    //   → byte = 0x42
-    uint8_t pdu[40];
-    uint8_t pLen = 0;
-    pdu[pLen++] = 0x42;
-
-    // Longitud del PDU: AdvA(6) + AD_structure(2+namelen)
-    uint8_t pduPayloadLen = 6 + (namelen > 0 ? (2 + namelen) : 0);
-    pdu[pLen++] = pduPayloadLen;
-
-    // AdvA: MAC en orden inverso (BLE la envía LSB first)
-    for (int i = 5; i >= 0; i--) pdu[pLen++] = mac[i];
-
-    // AD structure: Complete Local Name (tipo 0x09)
-    if (namelen > 0) {
-        pdu[pLen++] = 1 + namelen;  // longitud = tipo(1) + datos(namelen)
-        pdu[pLen++] = 0x09;          // tipo: Complete Local Name
-        memcpy(pdu + pLen, name, namelen);
-        pLen += namelen;
-    }
-
-    // CRC24 sobre toda la PDU (antes de whitening)
-    uint32_t crc = bleCRC24(pdu, pLen);
-    pdu[pLen++] = (uint8_t)(crc & 0xFF);
-    pdu[pLen++] = (uint8_t)((crc >> 8) & 0xFF);
-    pdu[pLen++] = (uint8_t)((crc >> 16) & 0xFF);
-
-    // Aplicar data-whitening BLE
-    bleWhiten(pdu, pLen, bleCh);
-
-    // Invertir bits de cada byte para compatibilidad con nRF24
-    uint8_t outLen = (pLen > 32) ? 32 : pLen;
-    for (uint8_t i = 0; i < outLen; i++) out[i] = reverseByte(pdu[i]);
-
-    return outLen;
-}
-
-/**
- * Genera una MAC aleatoria de 6 bytes.
- * Los dos bits más significativos del primer byte se fijan a 1
- * para indicar "dirección aleatoria estática" según BLE.
- */
-static void randomMAC(uint8_t* mac) {
-    for (int i = 0; i < 6; i++) mac[i] = (uint8_t)random(256);
-    mac[0] |= 0xC0;    // Bits 6 y 7 = 1 → random static address
-}
-
-// ╔══════════════════════════════════════════════════════════════════════════╗
-// ║  CONFIGURACIÓN DE RADIO                                                  ║
-// ╚══════════════════════════════════════════════════════════════════════════╝
-
-/**
- * Aplica la configuración base BLE a un radio nRF24:
- *   • 1 Mbps (BLE usa GFSK 1 Mbps)
- *   • CRC deshabilitado (BLE tiene su propio CRC de 24 bits)
- *   • Auto-ACK deshabilitado
- *   • Potencia máxima
- *   • Payload fijo de 32 bytes
- */
-static void applyBLEConfig(RF24* r) {
-    r->setDataRate(RF24_1MBPS);
-    r->setCRCLength(RF24_CRC_DISABLED);
-    r->setAutoAck(false);
-    r->setPALevel(RF24_PA_MAX);
-    r->setPayloadSize(32);
-    r->disableDynamicPayloads();
-}
-
-/**
- * Configura el radio en modo TX sobre el canal de advertising indicado.
- * chIdx: índice 0-2 en kBleRfCh[].
- */
-static void setTX(RF24* r, uint8_t chIdx) {
-    r->stopListening();
-    r->setChannel(kBleRfCh[chIdx]);
-    applyBLEConfig(r);
-    r->openWritingPipe(kBleAddrNrf);
-}
-
-/**
- * Configura el radio en modo RX sobre el canal de advertising indicado.
- * chIdx: índice 0-2 en kBleRfCh[].
- */
-static void setRX(RF24* r, uint8_t chIdx) {
-    r->stopListening();
-    r->setChannel(kBleRfCh[chIdx]);
-    applyBLEConfig(r);
-    r->openReadingPipe(1, kBleAddrNrf);
-    r->startListening();
-}
-
-// ╔══════════════════════════════════════════════════════════════════════════╗
-// ║  GESTIÓN DE MÓDULOS                                                      ║
-// ╚══════════════════════════════════════════════════════════════════════════╝
-
-// Declaración adelantada (stopModule se usa en handleCommand)
-static void stopModule(int idx);
-
-/**
- * Inicializa un módulo de radio.
- * Retorna true si el nRF24 responde correctamente.
- */
-static bool initModule(int idx, RF24* r, SPIClass* spi,
-                       uint8_t sck, uint8_t miso, uint8_t mosi, uint8_t csn) {
-    spi->begin(sck, miso, mosi, csn);
-    bool ok = r->begin(spi);
-    if (ok) {
-        applyBLEConfig(r);
-        r->stopListening();
-    }
-    mod[idx].radio        = r;
-    mod[idx].state        = MOD_IDLE;
-    strcpy(mod[idx].tag, "IDLE");
-    mod[idx].lastAdv      = 0;
-    mod[idx].lastFlood    = 0;
-    mod[idx].lastHop      = 0;
-    mod[idx].floodCount   = 0;
-    mod[idx].floodSent    = 0;
-    mod[idx].advMsg[0]    = '\0';
-    randomMAC(mod[idx].advMAC);
-    return ok;
-}
-
-// ╔══════════════════════════════════════════════════════════════════════════╗
-// ║  FUNCIONES DE ACTUALIZACIÓN DE ESTADO (no bloqueantes)                   ║
-// ╚══════════════════════════════════════════════════════════════════════════╝
-
-// ── updateScan ────────────────────────────────────────────────────────────────
-/**
- * Máquina de estado para escaneo BLE.
- * Rota entre los 3 canales de advertising cada SCAN_HOP_MS ms.
- * Por cada paquete recibido, intenta parsear MAC, RSSI y nombre.
- *
- * LIMITACIÓN nRF24: el registro RPD (Received Power Detector) solo indica
- * si la señal supera −64 dBm (1) o no (0), no el RSSI exacto.
- * Se mapea a valores aproximados: −55 dBm o −90 dBm.
- */
-static void updateScan(int idx) {
-    RadioModule* m = &mod[idx];
-    unsigned long now = millis();
-
-    // Verificar expiración del tiempo de escaneo
-    if (m->scanDuration > 0 && (now - m->scanStart) >= m->scanDuration) {
-        m->radio->stopListening();
-        m->state = MOD_IDLE;
-        strcpy(m->tag, "IDLE");
-        Serial.println("SCAN_DONE");
-        return;
-    }
-
-    // Rotar entre canales de advertising
-    if ((now - m->lastHop) >= SCAN_HOP_MS) {
-        m->scanChIdx = (m->scanChIdx + 1) % 3;
-        m->lastHop   = now;
-        setRX(m->radio, m->scanChIdx);
-    }
-
-    // Leer paquete si disponible
-    if (!m->radio->available()) return;
-
-    uint8_t raw[32] = {0};
-    m->radio->read(raw, 32);
-
-    // RSSI aproximado vía Received Power Detector
-    int8_t rssi = m->radio->testRPD() ? -55 : -90;
-
-    // Revertir bits y quitar whitening para obtener el PDU en bruto
-    uint8_t pkt[32];
-    uint8_t bleCh = kBleAdvCh[m->scanChIdx];
-    for (int i = 0; i < 32; i++) pkt[i] = reverseByte(raw[i]);
-    bleWhiten(pkt, 32, bleCh);
-
-    // Validar cabecera PDU básica
-    //   pkt[0] bits[3:0]: tipo PDU (0=ADV_IND, 1=ADV_DIRECT, 2=ADV_NONCONN, 5=ADV_SCAN)
-    //   pkt[1]: longitud del PDU (debe ser 6..37)
-    uint8_t pduType = pkt[0] & 0x0F;
-    uint8_t pduLen  = pkt[1];
-    if (pduType > 5 || pduLen < 6 || pduLen > 37) return;
-
-    // Extraer MAC: AdvA = pkt[2..7], BLE la envía LSB first → mostrar invertida
-    char macStr[18];
-    snprintf(macStr, sizeof(macStr),
-             "%02X:%02X:%02X:%02X:%02X:%02X",
-             pkt[7], pkt[6], pkt[5], pkt[4], pkt[3], pkt[2]);
-
-    // Buscar campo de nombre en AdvData (a partir de pkt[8])
-    // Formato AD: [len][type][data...][len][type][data...]...
-    //   tipo 0x08 = Shortened Local Name
-    //   tipo 0x09 = Complete Local Name
-    char name[32] = "";
-    uint8_t adOff = 8;
-    uint8_t adEnd = (uint8_t)(2 + pduLen);   // Fin de AdvData (sin CRC de 3 bytes)
-    if (adEnd > 29) adEnd = 29;              // Límite seguro dentro del buffer de 32 B
-
-    while (adOff < adEnd) {
-        uint8_t adLen  = pkt[adOff];
-        if (adLen == 0 || (adOff + adLen) >= 32) break;
-        uint8_t adType = pkt[adOff + 1];
-
-        if (adType == 0x09 || adType == 0x08) {
-            uint8_t nLen = adLen - 1;
-            if (nLen > 31) nLen = 31;
-            memcpy(name, pkt + adOff + 2, nLen);
-            name[nLen] = '\0';
-            // Filtrar caracteres no imprimibles
-            for (uint8_t k = 0; k < nLen; k++) {
-                if ((uint8_t)name[k] < 32 || (uint8_t)name[k] > 126) name[k] = '?';
-            }
-            break;
-        }
-        adOff += 1 + adLen;
-    }
-
-    Serial.printf("DEVICE:%s,%d,%s\n", macStr, rssi, name);
-}
-
-// ── updateAdvertise ───────────────────────────────────────────────────────────
-/**
- * Emite paquetes de advertising BLE periódicamente en los 3 canales.
- * Usa la MAC propia almacenada en m->advMAC y el mensaje en m->advMsg.
- */
-static void updateAdvertise(int idx) {
-    RadioModule* m   = &mod[idx];
-    unsigned long now = millis();
-    if ((now - m->lastAdv) < ADV_INTERVAL_MS) return;
-    m->lastAdv = now;
-
-    // Transmitir en los 3 canales de advertising BLE
-    for (uint8_t ch = 0; ch < 3; ch++) {
-        uint8_t pkt[32];
-        uint8_t pktLen = buildAdvPacket(pkt, m->advMAC, m->advMsg, ch);
-        setTX(m->radio, ch);
-        m->radio->write(pkt, pktLen);
-    }
-}
-
-// ── updateFlood ───────────────────────────────────────────────────────────────
-/**
- * Genera y transmite beacons BLE con MACs y nombres aleatorios.
- * Si floodCount > 0, se detiene al alcanzar ese número.
- * Si floodCount == 0, continúa hasta recibir STOP.
- */
-static void updateFlood(int idx) {
-    RadioModule* m   = &mod[idx];
-    unsigned long now = millis();
-    if ((now - m->lastFlood) < m->floodInterval) return;
-    m->lastFlood = now;
-
-    // Verificar límite de beacons
-    if (m->floodCount > 0 && m->floodSent >= m->floodCount) {
-        m->radio->stopListening();
-        m->state = MOD_IDLE;
-        strcpy(m->tag, "IDLE");
-        Serial.println("FLOOD_DONE");
-        return;
-    }
-
-    // MAC y nombre aleatorios para este beacon
-    uint8_t mac[6];
-    randomMAC(mac);
-    const char* name = kNames[random(kNamesCount)];
-
-    // Transmitir en los 3 canales
-    for (uint8_t ch = 0; ch < 3; ch++) {
-        uint8_t pkt[32];
-        uint8_t pktLen = buildAdvPacket(pkt, mac, name, ch);
-        setTX(m->radio, ch);
-        m->radio->write(pkt, pktLen);
-    }
-    m->floodSent++;
-}
-
-// ── updateJam (stub) ──────────────────────────────────────────────────────────
-/**
- * Gestiona el temporizador del comando JAM.
- * NOTA INTENCIONAL: No se llama a radio->startConstCarrier().
- * El firmware responde el protocolo pero NO emite portadora de RF.
- */
-static void updateJam(int idx) {
-    RadioModule* m = &mod[idx];
-    if (m->jamDuration == 0) return;    // Duración 0 = hasta STOP manual
-    if ((millis() - m->jamStart) >= m->jamDuration) {
-        m->state = MOD_IDLE;
-        strcpy(m->tag, "IDLE");
-        Serial.println("JAM_DONE");
-    }
-}
-
-// ── updateSweep (stub) ────────────────────────────────────────────────────────
-/**
- * Gestiona el temporizador del comando SWEEP_JAM.
- * NOTA INTENCIONAL: No se emite RF. Solo gestión de estado.
- */
-static void updateSweep(int idx) {
-    RadioModule* m = &mod[idx];
-    if (m->jamDuration == 0) return;
-    if ((millis() - m->jamStart) >= m->jamDuration) {
-        m->state = MOD_IDLE;
-        strcpy(m->tag, "IDLE");
-        Serial.println("SWEEP_DONE");
-    }
-}
-
-/**
- * Dispatcher principal: llama a la función correcta según el estado del módulo.
- */
-static void updateModule(int idx) {
-    switch (mod[idx].state) {
-        case MOD_SCANNING:      updateScan(idx);      break;
-        case MOD_ADVERTISING:   updateAdvertise(idx); break;
-        case MOD_FLOODING:      updateFlood(idx);     break;
-        case MOD_JAMMING:       updateJam(idx);       break;
-        case MOD_SWEEP_JAMMING: updateSweep(idx);     break;
-        case MOD_IDLE:          /* nada */             break;
-    }
-}
-
-// ╔══════════════════════════════════════════════════════════════════════════╗
-// ║  STOP                                                                    ║
-// ╚══════════════════════════════════════════════════════════════════════════╝
-
-/**
- * Detiene cualquier operación en curso del módulo indicado y lo pone en IDLE.
- * No envía "STOPPED" por serial (eso lo hace el caller si corresponde).
- */
-static void stopModule(int idx) {
-    mod[idx].radio->stopListening();
-    mod[idx].state = MOD_IDLE;
-    strcpy(mod[idx].tag, "IDLE");
-}
-
-// ╔══════════════════════════════════════════════════════════════════════════╗
-// ║  PARSER DE COMANDOS                                                      ║
-// ╚══════════════════════════════════════════════════════════════════════════╝
-
-/**
- * Procesa una línea de comando recibida por el puerto serie.
- * Los comandos están documentados en la cabecera del archivo.
- *
- * Formato de parseo:
- *   Se usa sscanf para extraer hasta 4 tokens separados por espacios.
- *   Para ADVERTISE, el mensaje se extrae manualmente desde la línea original
- *   para preservar espacios internos.
- */
-static void handleCommand(const char* line) {
-    char cmd[32]  = "";
-    char a1[64]   = "";
-    char a2[32]   = "";
-    char a3[32]   = "";
-
-    int argc = sscanf(line, "%31s %63s %31s %31s", cmd, a1, a2, a3);
-    if (argc < 1) return;
-
-    // ── STATUS ──────────────────────────────────────────────────────────────
-    if (strcmp(cmd, "STATUS") == 0) {
-        Serial.printf("MOD0:%s MOD1:%s\n", mod[0].tag, mod[1].tag);
-        return;
-    }
-
-    // ── Comandos que requieren número de módulo ───────────────────────────
-    if (argc < 2) {
-        Serial.println("ERROR:faltan argumentos");
-        return;
-    }
-    int idx = atoi(a1);
-    if (idx != 0 && idx != 1) {
-        Serial.println("ERROR:modulo invalido, usa 0 o 1");
-        return;
-    }
-    RadioModule* m = &mod[idx];
-
-    // ── STOP ────────────────────────────────────────────────────────────────
-    if (strcmp(cmd, "STOP") == 0) {
-        stopModule(idx);
-        Serial.println("STOPPED");
-        return;
-    }
-
-    // ── SCAN ─────────────────────────────────────────────────────────────────
-    if (strcmp(cmd, "SCAN") == 0) {
-        if (argc < 3) { Serial.println("ERROR:SCAN requiere <mod> <segundos>"); return; }
-        stopModule(idx);
-        m->state        = MOD_SCANNING;
-        m->scanDuration = (unsigned long)atoi(a2) * 1000UL;
-        m->scanStart    = millis();
-        m->scanChIdx    = 0;
-        m->lastHop      = millis();
-        strcpy(m->tag, "SCAN");
-        setRX(m->radio, 0);
-        Serial.println("SCANNING_STARTED");
-        return;
-    }
-
-    // ── ADVERTISE ────────────────────────────────────────────────────────────
-    if (strcmp(cmd, "ADVERTISE") == 0) {
-        if (argc < 3) { Serial.println("ERROR:ADVERTISE requiere <mod> <mensaje>"); return; }
-        stopModule(idx);
-
-        // Extraer mensaje completo (puede tener espacios):
-        //   Saltar "ADVERTISE " + número de módulo + espacio
-        const char* p = line;
-        while (*p && !isspace((unsigned char)*p)) p++;   // saltar "ADVERTISE"
-        while (*p && isspace((unsigned char)*p))  p++;   // saltar espacios
-        while (*p && !isspace((unsigned char)*p)) p++;   // saltar "<mod>"
-        while (*p && isspace((unsigned char)*p))  p++;   // saltar espacios → inicio del msg
-
-        strncpy(m->advMsg, p, 63);
-        m->advMsg[63] = '\0';
-
-        m->state   = MOD_ADVERTISING;
-        m->lastAdv = 0;    // Forzar envío inmediato
-        strcpy(m->tag, "ADV");
-        Serial.println("ADVERTISING_STARTED");
-        return;
-    }
-
-    // ── BEACON_FLOOD ──────────────────────────────────────────────────────────
-    if (strcmp(cmd, "BEACON_FLOOD") == 0) {
-        if (argc < 4) { Serial.println("ERROR:BEACON_FLOOD requiere <mod> <count> <interval_ms>"); return; }
-        stopModule(idx);
-        m->floodCount    = atoi(a2);
-        m->floodSent     = 0;
-        m->floodInterval = (unsigned long)atoi(a3);
-        if (m->floodInterval < 10) m->floodInterval = 10;  // Mínimo seguro
-        m->lastFlood     = 0;
-        m->state         = MOD_FLOODING;
-        strcpy(m->tag, "FLOOD");
-        Serial.println("FLOODING_STARTED");
-        return;
-    }
-
-    // ── JAM (stub) ────────────────────────────────────────────────────────────
-    if (strcmp(cmd, "JAM") == 0) {
-        if (argc < 4) { Serial.println("ERROR:JAM requiere <mod> <canal> <segundos>"); return; }
-        stopModule(idx);
-        // canal BLE (a2) es informativo, no se usa en el stub
-        m->jamDuration = (unsigned long)atoi(a3) * 1000UL;
-        m->jamStart    = millis();
-        m->state       = MOD_JAMMING;
-        strcpy(m->tag, "JAM");
-        Serial.println("JAMMING_STARTED");
-        // Stub: NO se emite portadora de RF (startConstCarrier omitido)
-        return;
-    }
-
-    // ── SWEEP_JAM (stub) ──────────────────────────────────────────────────────
-    if (strcmp(cmd, "SWEEP_JAM") == 0) {
-        if (argc < 3) { Serial.println("ERROR:SWEEP_JAM requiere <mod> <segundos>"); return; }
-        stopModule(idx);
-        m->jamDuration = (unsigned long)atoi(a2) * 1000UL;
-        m->jamStart    = millis();
-        m->state       = MOD_SWEEP_JAMMING;
-        strcpy(m->tag, "SWEEP");
-        Serial.println("SWEEP_JAMMING_STARTED");
-        // Stub: NO se emite portadora de RF
-        return;
-    }
-
-    // Comando desconocido
-    Serial.printf("ERROR:comando desconocido '%s'\n", cmd);
-}
-
-// ╔══════════════════════════════════════════════════════════════════════════╗
-// ║  OLED                                                                    ║
-// ╚══════════════════════════════════════════════════════════════════════════╝
-
-/**
- * Actualiza la pantalla OLED con:
- *   • Logo "DRAGON FLY v1.0"
- *   • Estado de cada módulo
- *   • Uptime del sistema
- *
- * Se llama desde loop() cada OLED_REFRESH_MS ms para no impactar la latencia.
- */
-static void updateOLED() {
-    u8g2.clearBuffer();
-    u8g2.setFont(u8g2_font_6x10_tf);
-
-    // ── Título / Logo ────────────────────────────────────────────────────────
-    u8g2.drawStr(0, 10, "DRAGON FLY v1.0");
-    u8g2.drawHLine(0, 13, 128);
-
-    // ── Estado de módulos ────────────────────────────────────────────────────
-    char lineBuf[32];
-    snprintf(lineBuf, sizeof(lineBuf), "MOD0: %-8s", mod[0].tag);
-    u8g2.drawStr(0, 27, lineBuf);
-    snprintf(lineBuf, sizeof(lineBuf), "MOD1: %-8s", mod[1].tag);
-    u8g2.drawStr(0, 40, lineBuf);
-
-    // ── Uptime ───────────────────────────────────────────────────────────────
-    u8g2.drawHLine(0, 50, 128);
-    unsigned long s = millis() / 1000;
-    snprintf(lineBuf, sizeof(lineBuf), "UP %02lu:%02lu:%02lu",
-             s / 3600, (s % 3600) / 60, s % 60);
-    u8g2.drawStr(0, 62, lineBuf);
-
-    u8g2.sendBuffer();
-}
-
-// ╔══════════════════════════════════════════════════════════════════════════╗
-// ║  setup()                                                                 ║
-// ╚══════════════════════════════════════════════════════════════════════════╝
-
+Module mod[2];
+
+// ========================== PROTOTIPOS ==========================
+void handleCommand(const String& cmd);
+void startScan(int idx, int duration);
+void startAdvertise(int idx, String msg);
+void startFlood(int idx, int count, int interval);
+void startJam(int idx, int channel, int duration);
+void startSweep(int idx, int duration);
+void stopModule(int idx);
+void updateModule(int idx);
+void updateOLED();
+String modeToString(Mode m);
+
+// ========================== SETUP ==========================
 void setup() {
-    Serial.begin(115200);
-    delay(300);
+  Serial.begin(115200);
+  delay(200);
 
-    // ── OLED ─────────────────────────────────────────────────────────────────
-    Wire.begin(PIN_OLED_SDA, PIN_OLED_SCL);
-    u8g2.begin();
-    u8g2.clearBuffer();
-    u8g2.setFont(u8g2_font_6x10_tf);
-    u8g2.drawStr(0, 20, "DRAGON FLY");
-    u8g2.drawStr(0, 35, "BLE GADGET v1.0");
-    u8g2.drawStr(0, 50, "Iniciando...");
-    u8g2.sendBuffer();
+  // Inicializar buses SPI
+  hspi.begin(HSPI_SCK, HSPI_MISO, HSPI_MOSI);
+  vspi.begin(VSPI_SCK, VSPI_MISO, VSPI_MOSI);
 
-    Serial.println("DRAGON FLY BLE GADGET v1.0");
+  // Inicializar radios BLE
+  ble0.begin();
+  ble1.begin();
 
-    // ── nRF24 #0 (HSPI) ──────────────────────────────────────────────────────
-    bool ok0 = initModule(0, &radio0, &spi0,
-                           PIN_SCK0, PIN_MISO0, PIN_MOSI0, PIN_CSN0);
-    Serial.printf("[MOD0] nRF24 HSPI: %s\n", ok0 ? "OK" : "FALLO – revisar cableado");
+  // OLED
+  Wire.begin(OLED_SDA, OLED_SCL);
+  u8g2.begin();
+  u8g2.setFont(u8g2_font_ncenB08_tr);
 
-    // ── nRF24 #1 (VSPI) ──────────────────────────────────────────────────────
-    bool ok1 = initModule(1, &radio1, &spi1,
-                           PIN_SCK1, PIN_MISO1, PIN_MOSI1, PIN_CSN1);
-    Serial.printf("[MOD1] nRF24 VSPI: %s\n", ok1 ? "OK" : "FALLO – revisar cableado");
-
-    // Semilla aleatoria desde el generador de hardware del ESP32
-    randomSeed(esp_random());
-
-    // ── OLED: estado inicial ──────────────────────────────────────────────────
-    delay(500);
-    updateOLED();
-
-    Serial.println("READY");
+  Serial.println("DRAGON FLY BLE GADGET v1.0");
+  updateOLED();
 }
 
-// ╔══════════════════════════════════════════════════════════════════════════╗
-// ║  loop()                                                                  ║
-// ╚══════════════════════════════════════════════════════════════════════════╝
-
+// ========================== LOOP PRINCIPAL ==========================
 void loop() {
-    // ── Lectura de comandos por serial (no bloqueante) ────────────────────────
-    //   Se acumulan caracteres en serialBuf hasta recibir '\n' o '\r'.
-    //   Máximo SCAN_HOP_MS ms de latencia (el loop es muy rápido).
-    while (Serial.available()) {
-        char c = (char)Serial.read();
-        if (c == '\n' || c == '\r') {
-            if (serialPos > 0) {
-                serialBuf[serialPos] = '\0';
-                handleCommand(serialBuf);
-                serialPos = 0;
+  // Leer comandos por línea
+  if (Serial.available()) {
+    String cmd = Serial.readStringUntil('\n');
+    cmd.trim();
+    if (cmd.length() > 0) {
+      handleCommand(cmd);
+    }
+  }
+
+  // Actualizar ambos módulos
+  updateModule(0);
+  updateModule(1);
+
+  // Refrescar OLED cada 500 ms
+  static unsigned long lastOled = 0;
+  if (millis() - lastOled >= 500) {
+    updateOLED();
+    lastOled = millis();
+  }
+}
+
+// ========================== COMANDOS ==========================
+void handleCommand(const String& cmd) {
+  char buf[128];
+  cmd.toCharArray(buf, 128);
+
+  char* token = strtok(buf, " ");
+  if (!token) return;
+  String command = String(token);
+  command.toUpperCase();
+
+  if (command == "SCAN") {
+    int idx = atoi(strtok(NULL, " "));
+    int dur = atoi(strtok(NULL, " "));
+    if (idx < 0 || idx > 1) { Serial.println("ERROR:Invalid module"); return; }
+    startScan(idx, dur);
+  }
+  else if (command == "STOP") {
+    int idx = atoi(strtok(NULL, " "));
+    if (idx < 0 || idx > 1) { Serial.println("ERROR:Invalid module"); return; }
+    stopModule(idx);
+  }
+  else if (command == "ADVERTISE") {
+    int idx = atoi(strtok(NULL, " "));
+    char* msg = strtok(NULL, "");
+    if (!msg) { Serial.println("ERROR:Missing message"); return; }
+    if (idx < 0 || idx > 1) { Serial.println("ERROR:Invalid module"); return; }
+    startAdvertise(idx, String(msg));
+  }
+  else if (command == "BEACON_FLOOD") {
+    int idx = atoi(strtok(NULL, " "));
+    int count = atoi(strtok(NULL, " "));
+    int interval = atoi(strtok(NULL, " "));
+    if (idx < 0 || idx > 1) { Serial.println("ERROR:Invalid module"); return; }
+    startFlood(idx, count, interval);
+  }
+  else if (command == "JAM") {
+    int idx = atoi(strtok(NULL, " "));
+    int channel = atoi(strtok(NULL, " "));
+    int duration = atoi(strtok(NULL, " "));
+    if (idx < 0 || idx > 1) { Serial.println("ERROR:Invalid module"); return; }
+    startJam(idx, channel, duration);
+  }
+  else if (command == "SWEEP_JAM") {
+    int idx = atoi(strtok(NULL, " "));
+    int duration = atoi(strtok(NULL, " "));
+    if (idx < 0 || idx > 1) { Serial.println("ERROR:Invalid module"); return; }
+    startSweep(idx, duration);
+  }
+  else if (command == "STATUS") {
+    String status = "MOD0:" + modeToString(mod[0].mode) + 
+                    " MOD1:" + modeToString(mod[1].mode);
+    Serial.println(status);
+  }
+  else {
+    Serial.println("ERROR:Unknown command");
+  }
+}
+
+// ========================== INICIO DE OPERACIONES ==========================
+void startScan(int idx, int duration) {
+  stopModule(idx);  // detiene cualquier operación previa
+  Module& m = mod[idx];
+  m.mode = SCANNING;
+  m.startTime = millis();
+  m.lastAction = millis() - Module::scanHopMs; // fuerza salto inmediato
+  m.scanChIdx = 2; // empezará en canal 37
+  Serial.println("SCANNING_STARTED");
+}
+
+void startAdvertise(int idx, String msg) {
+  stopModule(idx);
+  Module& m = mod[idx];
+  m.mode = ADVERTISING;
+  m.advMsg = msg;
+  m.lastAction = millis() - 100; // primera emisión inmediata
+  // MAC fija para publicidad
+  uint8_t mac[6] = {0xDE, 0xAD, 0xBE, 0xEF, 0x00, 0x01};
+  (idx == 0 ? ble0 : ble1).setMAC(mac);
+  Serial.println("ADVERTISING_STARTED");
+}
+
+void startFlood(int idx, int count, int interval) {
+  stopModule(idx);
+  Module& m = mod[idx];
+  m.mode = FLOOD;
+  m.floodCount = count;
+  m.floodSent = 0;
+  m.floodIntervalMs = interval;
+  m.lastAction = millis() - interval;
+  Serial.println("FLOODING_STARTED");
+}
+
+void startJam(int idx, int channel, int duration) {
+  stopModule(idx);
+  Module& m = mod[idx];
+  RF24& radio = (idx == 0) ? radio0 : radio1;
+  int rf_ch = 2 + channel;
+  radio.stopConstCarrier();
+  radio.startConstCarrier(RF24_PA_MAX, rf_ch);
+  m.mode = JAM;
+  m.jamChannel = channel;
+  m.durationSec = duration;
+  m.startTime = millis();
+  Serial.println("JAMMING_STARTED");
+}
+
+void startSweep(int idx, int duration) {
+  stopModule(idx);
+  Module& m = mod[idx];
+  RF24& radio = (idx == 0) ? radio0 : radio1;
+  m.mode = SWEEP;
+  m.durationSec = duration;
+  m.startTime = millis();
+  m.sweepChannel = 39; // primer salto irá al 0
+  m.lastAction = millis() - Module::sweepHopMs;
+  radio.stopConstCarrier();
+  Serial.println("SWEEP_JAMMING_STARTED");
+}
+
+// ========================== PARADA ==========================
+void stopModule(int idx) {
+  mod[idx].stopRequested = true;
+  // El flag se procesa en updateModule()
+}
+
+// ========================== ACTUALIZACIÓN DE MÓDULOS ==========================
+void updateModule(int idx) {
+  Module& m = mod[idx];
+  BLERadio& ble = (idx == 0) ? ble0 : ble1;
+  RF24& radio = (idx == 0) ? radio0 : radio1;
+
+  // Procesar solicitud de parada
+  if (m.stopRequested) {
+    switch (m.mode) {
+      case JAM:
+        radio.stopConstCarrier();
+        Serial.println("STOPPED");
+        break;
+      case SWEEP:
+        radio.stopConstCarrier();
+        Serial.println("STOPPED");
+        break;
+      case SCANNING:
+        Serial.println("STOPPED");
+        break;
+      case ADVERTISING:
+        Serial.println("STOPPED");
+        break;
+      case FLOOD:
+        Serial.println("STOPPED");
+        break;
+      default: break;
+    }
+    m.mode = IDLE;
+    m.stopRequested = false;
+    return;
+  }
+
+  // Máquina de estados
+  switch (m.mode) {
+    // ---------- IDLE ----------
+    case IDLE: break;
+
+    // ---------- SCANNING ----------
+    case SCANNING: {
+      if (m.durationSec > 0 && (millis() - m.startTime) >= m.durationSec * 1000UL) {
+        m.mode = IDLE;
+        Serial.println("SCAN_DONE");
+        break;
+      }
+      // Salto de canal
+      if (millis() - m.lastAction >= Module::scanHopMs) {
+        m.scanChIdx = (m.scanChIdx + 1) % 3;
+        int bleCh = (m.scanChIdx == 0) ? 37 : (m.scanChIdx == 1 ? 38 : 39);
+        ble.setChannel(bleCh);
+        m.lastAction = millis();
+      }
+      // Capturar paquete
+      uint8_t packet[32];
+      uint8_t len;
+      if (ble.getPacket(packet, len)) {
+        // Analizar ADV_IND (tipo 0x00)
+        if (len >= 2 && (packet[0] & 0x0F) == 0x00) {
+          // MAC en bytes 2..7 (big endian)
+          char macStr[18];
+          sprintf(macStr, "%02X:%02X:%02X:%02X:%02X:%02X",
+                  packet[2], packet[3], packet[4], packet[5], packet[6], packet[7]);
+
+          // RSSI aproximado mediante RPD
+          int rssi = radio.testRPD() ? -50 : -80;
+
+          // Extraer Complete Local Name (0x09)
+          String name = "";
+          int pos = 8; // inicio de AdvData
+          while (pos < len) {
+            uint8_t fieldLen = packet[pos];
+            if (fieldLen == 0) break;
+            uint8_t type = packet[pos + 1];
+            if (type == 0x09) {
+              for (int i = 0; i < fieldLen - 1; i++)
+                name += (char)packet[pos + 2 + i];
+              break;
             }
-        } else if (serialPos < (int)(sizeof(serialBuf) - 1)) {
-            serialBuf[serialPos++] = c;
+            pos += fieldLen + 1;
+          }
+          Serial.print("DEVICE:");
+          Serial.print(macStr);
+          Serial.print(",");
+          Serial.print(rssi);
+          Serial.print(",");
+          Serial.println(name);
         }
+      }
+      break;
     }
 
-    // ── Actualizar estado de cada módulo ──────────────────────────────────────
-    updateModule(0);
-    updateModule(1);
-
-    // ── Refresco periódico de la OLED ─────────────────────────────────────────
-    if ((millis() - lastOledRefresh) >= OLED_REFRESH_MS) {
-        lastOledRefresh = millis();
-        updateOLED();
+    // ---------- ADVERTISING ----------
+    case ADVERTISING: {
+      if (millis() - m.lastAction >= 100) {
+        uint8_t packet[32];
+        uint8_t len;
+        ble.createPacket(m.advMsg.c_str(), packet, len);
+        ble.sendPacket(packet, len);
+        m.lastAction = millis();
+      }
+      break;
     }
+
+    // ---------- FLOOD ----------
+    case FLOOD: {
+      if (m.floodCount == 0 || m.floodSent < m.floodCount) {
+        if (millis() - m.lastAction >= m.floodIntervalMs) {
+          // MAC aleatoria
+          uint8_t rndMac[6];
+          for (int i = 0; i < 6; i++) rndMac[i] = random(256);
+          ble.setMAC(rndMac);
+          // Nombre aleatorio de 4 caracteres
+          char rndName[8];
+          for (int i = 0; i < 4; i++) rndName[i] = 'A' + random(26);
+          rndName[4] = '\0';
+          uint8_t packet[32];
+          uint8_t len;
+          ble.createPacket(rndName, packet, len);
+          ble.sendPacket(packet, len);
+          m.floodSent++;
+          m.lastAction = millis();
+          // Si cuenta finita y hemos terminado, pasar a IDLE
+          if (m.floodCount > 0 && m.floodSent >= m.floodCount) {
+            m.mode = IDLE;
+            // No se envía FLOOD_DONE porque el protocolo no lo contempla
+          }
+        }
+      }
+      break;
+    }
+
+    // ---------- JAM ----------
+    case JAM: {
+      if (m.durationSec > 0 && (millis() - m.startTime) >= m.durationSec * 1000UL) {
+        radio.stopConstCarrier();
+        m.mode = IDLE;
+        Serial.println("JAM_DONE");
+      }
+      break;
+    }
+
+    // ---------- SWEEP ----------
+    case SWEEP: {
+      if (m.durationSec > 0 && (millis() - m.startTime) >= m.durationSec * 1000UL) {
+        radio.stopConstCarrier();
+        m.mode = IDLE;
+        Serial.println("SWEEP_DONE");
+        break;
+      }
+      if (millis() - m.lastAction >= Module::sweepHopMs) {
+        m.sweepChannel = (m.sweepChannel + 1) % 40; // 0‑39
+        int rfCh = 2 + m.sweepChannel;
+        radio.stopConstCarrier();
+        radio.startConstCarrier(RF24_PA_MAX, rfCh);
+        m.lastAction = millis();
+      }
+      break;
+    }
+  }
+}
+
+// ========================== OLED ==========================
+void updateOLED() {
+  u8g2.clearBuffer();
+  u8g2.setFont(u8g2_font_ncenB08_tr);
+  u8g2.drawStr(0, 10, "DRAGON FLY");
+  String line0 = "M0: " + modeToString(mod[0].mode);
+  String line1 = "M1: " + modeToString(mod[1].mode);
+  u8g2.drawStr(0, 30, line0.c_str());
+  u8g2.drawStr(0, 45, line1.c_str());
+  u8g2.sendBuffer();
+}
+
+String modeToString(Mode m) {
+  switch (m) {
+    case IDLE:        return "IDLE";
+    case SCANNING:    return "SCAN";
+    case ADVERTISING: return "ADV";
+    case FLOOD:       return "FLOOD";
+    case JAM:         return "JAM";
+    case SWEEP:       return "SWEEP";
+  }
+  return "?";
 }
