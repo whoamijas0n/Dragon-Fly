@@ -1,546 +1,339 @@
-/**
- * DRAGON FLY - ESP32 BLE Gadget Firmware (v3.1 + Sweep Jammer)
- *
- * ADVERTENCIA LEGAL: Solo para uso autorizado en auditorías con consentimiento.
- *
- * Controla dos módulos nRF24L01+PA+LNA (HSPI y VSPI) para:
- *   - Escaneo BLE (sniffer de direcciones MAC)
- *   - Publicidad Bluejacking (envío de nombre personalizado)
- *   - Beacon Flooding (nombres aleatorios)
- *   - Jamming de portadora continua en un canal
- *   - Barrido de frecuencia (Sweep Jammer) 0-76
- *
- * Pantalla OLED SSD1306 128x64 I2C (SDA=4, SCL=5)
- */
-
+#include "RF24.h"
 #include <SPI.h>
-#include <RF24.h>
-#include <BTLE.h>
+#include <ezButton.h>
+#include "esp_bt.h"
+#include "esp_wifi.h"
+
+// ========== PANTALLA OLED 0.96" (SDA=4, SCL=5) ==========
 #include <Wire.h>
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
-
-// -------------------------------------------------------------------
-// OLED
-// -------------------------------------------------------------------
-#define OLED_SDA      4
-#define OLED_SCL      5
-#define OLED_ADDR     0x3C
 #define SCREEN_WIDTH  128
-#define SCREEN_HEIGHT 64
-#define OLED_RESET    -1
+#define SCREEN_HEIGHT  64
+#define OLED_ADDR      0x3C
+#define SDA_PIN        4
+#define SCL_PIN        5
+Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1);
+// =========================================================
 
-Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
+SPIClass *sp = nullptr;
+SPIClass *hp = nullptr;
 
-const unsigned long DISPLAY_UPDATE_MS = 200;
+RF24 radio(16, 15, 16000000);   // HSPI
+RF24 radio1(22, 21, 16000000);  // VSPI
 
-String lastCommand = "";
-int deviceCount[2] = {0, 0};
-unsigned long lastDisplayUpdate = 0;
+unsigned int flag = 0;   // HSPI
+unsigned int flagv = 0;  // VSPI
+int ch = 45;
+int ch1 = 45;
 
-// -------------------------------------------------------------------
-// Pinout HSPI y VSPI
-// -------------------------------------------------------------------
-const int HSPI_SCK  = 14;
-const int HSPI_MISO = 12;
-const int HSPI_MOSI = 13;
-const int HSPI_SS   = 15;
-const int HSPI_CE   = 16;
+ezButton toggleSwitch(33);
 
-const int VSPI_SCK  = 18;
-const int VSPI_MISO = 19;
-const int VSPI_MOSI = 23;
-const int VSPI_SS   = 21;
-const int VSPI_CE   = 22;
+// ========== VARIABLES DE CONTROL (sin cambios) ==========
+bool jamming_enabled = false;
+unsigned long stop_time = 0;
+bool has_duration = false;
 
-SPIClass hspi(HSPI);
-SPIClass vspi(VSPI);
+// Buffer para comandos serie
+String serial_buffer = "";
 
-RF24 radio0(HSPI_CE, HSPI_SS);
-RF24 radio1(VSPI_CE, VSPI_SS);
+// ========== VARIABLES EXCLUSIVAS DE OLED ==========
+static bool  oled_blink      = false;
+static unsigned long oled_last_blink  = 0;
+static unsigned long oled_last_update = 0;
+// =====================================================
 
-BTLE btle0(&radio0);
-BTLE btle1(&radio1);
 
-// -------------------------------------------------------------------
-// Estados de cada módulo (añadido SWEEP_JAMMING)
-// -------------------------------------------------------------------
-enum ModuleState {
-  IDLE,
-  SCANNING,
-  ADVERTISING,
-  FLOODING,
-  JAMMING,
-  SWEEP_JAMMING
-};
+// ─────────────────────────────────────────────────────────────────────────────
+//  DIBUJAR ÍCONO BLUETOOTH (símbolo clásico ᛒ)
+//  Parámetros: cx/cy = centro, h = semialtura, w = semianchura
+// ─────────────────────────────────────────────────────────────────────────────
+void drawBTIcon(int cx, int cy, int h, int w) {
+  int h3 = h / 3;          // un tercio de la altura
+  // Línea vertical principal (doble para grosor)
+  display.drawLine(cx,   cy - h, cx,   cy + h, WHITE);
+  display.drawLine(cx+1, cy - h, cx+1, cy + h, WHITE);
 
-struct ModuleInfo {
-  ModuleState state;
-  bool stopRequested;
-  unsigned long startTime;
-  unsigned long scanDuration;
-  String advertiseMsg;
-  int floodCount;
-  int floodInterval;
-  int floodCurrent;
-  unsigned long lastBeaconTime;
-  int jamChannel;
-  unsigned long jamEndTime;
-  bool jammingActive;
-};
+  // Brazo superior derecho: cima → vértice derecho
+  display.drawLine(cx,   cy - h,  cx + w, cy - h3, WHITE);
+  // Regreso al centro
+  display.drawLine(cx + w, cy - h3, cx,   cy,      WHITE);
 
-ModuleInfo modules[2] = {
-  { IDLE, false, 0, 0, "" },
-  { IDLE, false, 0, 0, "" }
-};
-
-// -------------------------------------------------------------------
-// Sniffer BLE
-// -------------------------------------------------------------------
-void configureRadioForSniffing(RF24 &radio) {
-  radio.stopListening();
-  radio.setAutoAck(false);
-  radio.setCRCLength(RF24_CRC_DISABLED);
-  radio.setDataRate(RF24_1MBPS);
-  radio.setChannel(37);
-  uint8_t addr[5] = {0x8E, 0x89, 0xBE, 0xD6, 0x02};
-  radio.openReadingPipe(0, addr);
-  radio.startListening();
+  // Brazo inferior derecho: centro → vértice derecho
+  display.drawLine(cx,   cy,       cx + w, cy + h3, WHITE);
+  // Regreso al fondo
+  display.drawLine(cx + w, cy + h3, cx,   cy + h,   WHITE);
 }
 
-bool sniffBLEPacket(RF24 &radio, uint8_t *buffer, uint8_t &len, int &rssi) {
-  if (!radio.available()) return false;
-  len = radio.getPayloadSize();
-  radio.read(buffer, len);
-  rssi = radio.testRPD() ? -40 : -80;
-  return true;
-}
 
-bool isBLEAdvertising(uint8_t *buffer, uint8_t len) {
-  if (len < 2) return false;
-  uint8_t pduType = buffer[0] & 0x0F;
-  return (pduType >= 0 && pduType <= 3);
-}
-
-void extractMAC(uint8_t *buffer, uint8_t len, uint8_t *mac) {
-  memcpy(mac, buffer + 2, 6);
-}
-
-// -------------------------------------------------------------------
-// Prototipos
-// -------------------------------------------------------------------
-void processCommand(String cmd);
-void initRadio(RF24 &radio, SPIClass &spi, uint8_t sck, uint8_t miso, uint8_t mosi);
-void handleModule(int index, BTLE &btle, RF24 &radio, ModuleInfo &mod);
-void doScan(int index, RF24 &radio, ModuleInfo &mod);
-void doAdvertise(int index, BTLE &btle, ModuleInfo &mod);
-void doFlood(int index, BTLE &btle, ModuleInfo &mod);
-void doJam(int index, RF24 &radio, ModuleInfo &mod);
-void doSweepJam(int index, RF24 &radio, ModuleInfo &mod);
-void stopModule(int index, BTLE &btle, RF24 &radio, ModuleInfo &mod);
-void updateDisplay();
-
-// -------------------------------------------------------------------
-// SETUP
-// -------------------------------------------------------------------
-void setup() {
-  Serial.begin(115200);
-  delay(100);
-
-  Wire.begin(OLED_SDA, OLED_SCL);
-  if (!display.begin(SSD1306_SWITCHCAPVCC, OLED_ADDR)) {
-    Serial.println("ERROR: OLED no encontrada");
-  } else {
-    display.clearDisplay();
-    display.setTextSize(1);
-    display.setTextColor(SSD1306_WHITE);
-    display.setCursor(10, 20);
-    display.println("DRAGON FLY");
-    display.setCursor(10, 40);
-    display.println("GADGET OLED");
-    display.display();
-    delay(1500);
-    display.clearDisplay();
-    display.display();
+// ─────────────────────────────────────────────────────────────────────────────
+//  ACTUALIZAR PANTALLA OLED
+//  Se llama desde loop() cada ~200 ms. NO toca ninguna variable de radio.
+// ─────────────────────────────────────────────────────────────────────────────
+void updateOLED() {
+  // — Parpadeo del indicador de estado cada 500 ms —
+  if (millis() - oled_last_blink > 500) {
+    oled_blink = !oled_blink;
+    oled_last_blink = millis();
   }
-
-  Serial.println("DRAGON FLY GADGET READY");
-
-  initRadio(radio0, hspi, HSPI_SCK, HSPI_MISO, HSPI_MOSI);
-  initRadio(radio1, vspi, VSPI_SCK, VSPI_MISO, VSPI_MOSI);
-
-  btle0.begin("GADGET0");
-  btle1.begin("GADGET1");
-
-  Serial.println("MODULOS LISTOS");
-}
-
-void initRadio(RF24 &radio, SPIClass &spi, uint8_t sck, uint8_t miso, uint8_t mosi) {
-  spi.begin(sck, miso, mosi, -1);
-  if (!radio.begin(&spi)) {
-    Serial.println("ERROR:INIT_RADIO");
-    while(1);
-  }
-  radio.setAutoAck(false);
-  radio.setDataRate(RF24_1MBPS);
-  radio.setCRCLength(RF24_CRC_DISABLED);
-  radio.setChannel(37);
-  radio.powerUp();
-}
-
-// -------------------------------------------------------------------
-// LOOP PRINCIPAL
-// -------------------------------------------------------------------
-void loop() {
-  if (Serial.available()) {
-    String cmd = Serial.readStringUntil('\n');
-    cmd.trim();
-    if (cmd.length() > 0) {
-      processCommand(cmd);
-    }
-  }
-
-  handleModule(0, btle0, radio0, modules[0]);
-  handleModule(1, btle1, radio1, modules[1]);
-
-  updateDisplay();
-}
-
-// -------------------------------------------------------------------
-// Procesador de comandos (añadido SWEEP_JAM)
-// -------------------------------------------------------------------
-void processCommand(String cmd) {
-  lastCommand = cmd.length() > 20 ? cmd.substring(0, 20) : cmd;
-
-  cmd.toUpperCase();
-  int firstSpace = cmd.indexOf(' ');
-  String op = (firstSpace == -1) ? cmd : cmd.substring(0, firstSpace);
-
-  if (op == "SCAN") {
-    int m = cmd.substring(5, cmd.indexOf(' ', 5)).toInt();
-    int dur = cmd.substring(cmd.lastIndexOf(' ') + 1).toInt();
-    if (m >= 0 && m <= 1 && dur > 0) {
-      if (modules[m].state == IDLE) {
-        modules[m].state = SCANNING;
-        modules[m].startTime = millis();
-        modules[m].scanDuration = dur * 1000UL;
-        modules[m].stopRequested = false;
-        configureRadioForSniffing(m == 0 ? radio0 : radio1);
-        deviceCount[m] = 0;
-        Serial.println("SCANNING_STARTED");
-      } else {
-        Serial.println("ERROR:MODULE_BUSY");
-      }
-    } else {
-      Serial.println("ERROR:INVALID_PARAMS");
-    }
-  } else if (op == "ADVERTISE") {
-    int m = cmd.substring(9, cmd.indexOf(' ', 9)).toInt();
-    String msg = cmd.substring(cmd.indexOf(' ', 9) + 1);
-    msg.trim();
-    if (m >= 0 && m <= 1 && msg.length() > 0) {
-      if (modules[m].state == IDLE) {
-        modules[m].state = ADVERTISING;
-        modules[m].advertiseMsg = msg;
-        modules[m].stopRequested = false;
-        Serial.println("ADVERTISING_STARTED");
-      } else {
-        Serial.println("ERROR:MODULE_BUSY");
-      }
-    } else {
-      Serial.println("ERROR:INVALID_PARAMS");
-    }
-  } else if (op == "BEACON_FLOOD") {
-    int m = cmd.substring(12, cmd.indexOf(' ', 12)).toInt();
-    int sp2 = cmd.lastIndexOf(' ');
-    int sp1 = cmd.lastIndexOf(' ', sp2 - 1);
-    int count = cmd.substring(sp1 + 1, sp2).toInt();
-    int interval = cmd.substring(sp2 + 1).toInt();
-    if (m >= 0 && m <= 1 && count > 0 && interval > 0) {
-      if (modules[m].state == IDLE) {
-        modules[m].state = FLOODING;
-        modules[m].floodCount = count;
-        modules[m].floodInterval = interval;
-        modules[m].floodCurrent = 0;
-        modules[m].lastBeaconTime = millis();
-        modules[m].stopRequested = false;
-        Serial.println("FLOODING_STARTED");
-      } else {
-        Serial.println("ERROR:MODULE_BUSY");
-      }
-    } else {
-      Serial.println("ERROR:INVALID_PARAMS");
-    }
-  } else if (op == "JAM") {
-    int m = cmd.substring(3, cmd.indexOf(' ', 3)).toInt();
-    int ch = cmd.substring(cmd.indexOf(' ', 3) + 1, cmd.lastIndexOf(' ')).toInt();
-    int dur = cmd.substring(cmd.lastIndexOf(' ') + 1).toInt();
-    if (m >= 0 && m <= 1 && ch >= 0 && ch <= 78 && dur > 0) {
-      if (modules[m].state == IDLE) {
-        modules[m].state = JAMMING;
-        modules[m].jamChannel = ch;
-        modules[m].jamEndTime = millis() + dur * 1000UL;
-        modules[m].stopRequested = false;
-        modules[m].jammingActive = false;
-        Serial.println("JAMMING_STARTED");
-      } else {
-        Serial.println("ERROR:MODULE_BUSY");
-      }
-    } else {
-      Serial.println("ERROR:INVALID_PARAMS");
-    }
-  } else if (op == "SWEEP_JAM") {
-    int m = cmd.substring(9, cmd.indexOf(' ', 9)).toInt();
-    int dur = cmd.substring(cmd.lastIndexOf(' ') + 1).toInt();
-    if (m >= 0 && m <= 1 && dur > 0) {
-      if (modules[m].state == IDLE) {
-        modules[m].state = SWEEP_JAMMING;
-        modules[m].jamChannel = 0;
-        modules[m].jamEndTime = millis() + dur * 1000UL;
-        modules[m].stopRequested = false;
-        modules[m].jammingActive = false;
-        Serial.println("SWEEP_JAMMING_STARTED");
-      } else {
-        Serial.println("ERROR:MODULE_BUSY");
-      }
-    } else {
-      Serial.println("ERROR:INVALID_PARAMS");
-    }
-  } else if (op == "STOP") {
-    int m = cmd.substring(4).toInt();
-    if (m >= 0 && m <= 1) {
-      modules[m].stopRequested = true;
-      Serial.println("STOPPING");
-    } else {
-      Serial.println("ERROR:INVALID_MODULE");
-    }
-  } else if (cmd == "STATUS") {
-    Serial.print("STATUS:OK,MOD0=");
-    Serial.print(modules[0].state == IDLE ? "IDLE" :
-                 modules[0].state == SCANNING ? "SCANNING" :
-                 modules[0].state == ADVERTISING ? "ADVERTISING" :
-                 modules[0].state == FLOODING ? "FLOODING" :
-                 modules[0].state == JAMMING ? "JAMMING" : "SWEEP_JAM");
-    Serial.print(",MOD1=");
-    Serial.println(modules[1].state == IDLE ? "IDLE" :
-                   modules[1].state == SCANNING ? "SCANNING" :
-                   modules[1].state == ADVERTISING ? "ADVERTISING" :
-                   modules[1].state == FLOODING ? "FLOODING" :
-                   modules[1].state == JAMMING ? "JAMMING" : "SWEEP_JAM");
-  } else {
-    Serial.println("ERROR:UNKNOWN_COMMAND");
-  }
-}
-
-// -------------------------------------------------------------------
-// Manejo de módulos (añadido caso SWEEP_JAMMING)
-// -------------------------------------------------------------------
-void handleModule(int index, BTLE &btle, RF24 &radio, ModuleInfo &mod) {
-  if (mod.stopRequested) {
-    stopModule(index, btle, radio, mod);
-    mod.stopRequested = false;
-  }
-  switch (mod.state) {
-    case SCANNING:    doScan(index, radio, mod); break;
-    case ADVERTISING: doAdvertise(index, btle, mod); break;
-    case FLOODING:    doFlood(index, btle, mod); break;
-    case JAMMING:     doJam(index, radio, mod); break;
-    case SWEEP_JAMMING: doSweepJam(index, radio, mod); break;
-    default: break;
-  }
-}
-
-void doScan(int index, RF24 &radio, ModuleInfo &mod) {
-  uint8_t buf[32];
-  uint8_t len;
-  int rssi;
-  if (sniffBLEPacket(radio, buf, len, rssi)) {
-    if (isBLEAdvertising(buf, len)) {
-      uint8_t mac[6];
-      extractMAC(buf, len, mac);
-      char macStr[18];
-      sprintf(macStr, "%02X:%02X:%02X:%02X:%02X:%02X",
-              mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
-      Serial.print("DEVICE:");
-      Serial.print(macStr);
-      Serial.print(",");
-      Serial.print(rssi);
-      Serial.println(",Unknown");
-      deviceCount[index]++;
-    }
-  }
-  if (millis() - mod.startTime >= mod.scanDuration) {
-    Serial.println("SCAN_DONE");
-    mod.state = IDLE;
-    radio.stopListening();
-  }
-}
-
-void doAdvertise(int index, BTLE &btle, ModuleInfo &mod) {
-  if (mod.advertiseMsg.length() == 0) return;
-  const char* msg = mod.advertiseMsg.c_str();
-  btle.advertise(0x09, (void*)msg, strlen(msg));
-  delay(100);
-}
-
-void doFlood(int index, BTLE &btle, ModuleInfo &mod) {
-  if (mod.floodCurrent >= mod.floodCount) {
-    Serial.println("FLOOD_DONE");
-    mod.state = IDLE;
-    return;
-  }
-  unsigned long now = millis();
-  if (now - mod.lastBeaconTime >= mod.floodInterval) {
-    const char* ssids[] = {"FreeWiFi","Starbucks","AirportWifi","Corporate","Guest","HomeNetwork","PublicWiFi","Office"};
-    int idx = random(0, 8);
-    String randomName = String(ssids[idx]) + String(random(100, 999));
-    btle.advertise(0x09, (void*)randomName.c_str(), randomName.length());
-    mod.floodCurrent++;
-    mod.lastBeaconTime = now;
-  }
-}
-
-void doJam(int index, RF24 &radio, ModuleInfo &mod) {
-  if (millis() >= mod.jamEndTime) {
-    if (mod.jammingActive) {
-      radio.stopConstCarrier();
-      mod.jammingActive = false;
-    }
-    radio.powerDown();
-    radio.powerUp();
-    Serial.println("JAM_DONE");
-    mod.state = IDLE;
-    return;
-  }
-  if (!mod.jammingActive) {
-    radio.setChannel(mod.jamChannel);
-    radio.startConstCarrier(RF24_PA_MAX, mod.jamChannel);
-    mod.jammingActive = true;
-  }
-}
-
-// -------------------- NUEVA FUNCIÓN DE BARRIDO --------------------
-void doSweepJam(int index, RF24 &radio, ModuleInfo &mod) {
-  if (millis() >= mod.jamEndTime) {
-    if (mod.jammingActive) {
-      radio.stopConstCarrier();
-      mod.jammingActive = false;
-    }
-    radio.powerDown();
-    radio.powerUp();
-    Serial.println("SWEEP_JAM_DONE");
-    mod.state = IDLE;
-    return;
-  }
-
-  // Iniciar portadora en canal 0 si aún no está activa
-  if (!mod.jammingActive) {
-    radio.setChannel(0);
-    radio.startConstCarrier(RF24_PA_MAX, 0);
-    mod.jammingActive = true;
-  }
-
-  // Barrido rápido por canales 0-76
-  for (int ch = 0; ch <= 76; ch++) {
-    if (mod.stopRequested || millis() >= mod.jamEndTime) break;
-    radio.setChannel(ch);
-    delayMicroseconds(60);  // 60 µs por canal, ciclo total ~4.6ms
-  }
-}
-
-void stopModule(int index, BTLE &btle, RF24 &radio, ModuleInfo &mod) {
-  switch (mod.state) {
-    case SCANNING:
-      radio.stopListening();
-      deviceCount[index] = 0;
-      break;
-    case ADVERTISING:
-    case FLOODING:
-      break;
-    case JAMMING:
-      if (mod.jammingActive) {
-        radio.stopConstCarrier();
-        mod.jammingActive = false;
-      }
-      radio.powerDown();
-      radio.powerUp();
-      break;
-    case SWEEP_JAMMING:
-      if (mod.jammingActive) {
-        radio.stopConstCarrier();
-        mod.jammingActive = false;
-      }
-      radio.powerDown();
-      radio.powerUp();
-      break;
-    default: break;
-  }
-  mod.state = IDLE;
-  Serial.println("STOPPED");
-}
-
-// -------------------------------------------------------------------
-// Pantalla OLED (añadido SWEEP_JAM)
-// -------------------------------------------------------------------
-void updateDisplay() {
-  if (millis() - lastDisplayUpdate < DISPLAY_UPDATE_MS) return;
-  lastDisplayUpdate = millis();
-
-  if (!display.getBuffer()) return;
 
   display.clearDisplay();
+
+  // ── Marco exterior redondeado ──────────────────────────────────────────────
+  display.drawRoundRect(0, 0, 128, 64, 4, WHITE);
+
+  // ── Panel izquierdo: ícono Bluetooth ──────────────────────────────────────
+  // Círculo de fondo del ícono
+  display.drawCircle(24, 32, 21, WHITE);
+
+  // Ícono BT centrado en (24, 32)
+  drawBTIcon(24, 32, 15, 10);
+
+  // ── Divisor vertical ──────────────────────────────────────────────────────
+  display.drawLine(49, 4, 49, 59, WHITE);
+
+  // ── Panel derecho: título ─────────────────────────────────────────────────
+  //   "Blue" en tamaño 2  (48 × 16 px)
+  display.setTextSize(2);
+  display.setTextColor(WHITE);
+  display.setCursor(55, 5);
+  display.print("Blue");
+
+  //   "-Fly" en tamaño 2 justo debajo
+  display.setCursor(55, 22);
+  display.print("-Fly");
+
+  // Línea separadora bajo el título
+  display.drawLine(52, 41, 124, 41, WHITE);
+
+  // ── Subtítulo: estado ─────────────────────────────────────────────────────
   display.setTextSize(1);
-  display.setTextColor(SSD1306_WHITE);
+  display.setTextColor(WHITE);
 
-  display.setCursor(20, 0);
-  display.println("DRAGON FLY GADGET");
-
-  auto stateToStr = [](ModuleState s) -> const char* {
-    switch (s) {
-      case IDLE:         return "IDLE";
-      case SCANNING:     return "SCANNING";
-      case ADVERTISING:  return "ADVERTISING";
-      case FLOODING:     return "FLOODING";
-      case JAMMING:      return "JAMMING";
-      case SWEEP_JAMMING:return "SWEEP_JAM";
-      default:           return "???";
+  if (jamming_enabled) {
+    // Indicador circular parpadeante (activo)
+    if (oled_blink) {
+      display.fillCircle(57, 53, 3, WHITE);
+    } else {
+      display.drawCircle(57, 53, 3, WHITE);
     }
-  };
-
-  display.setCursor(0, 16);
-  display.print("Mod0: ");
-  display.println(stateToStr(modules[0].state));
-  if (modules[0].state == SCANNING) {
-    display.setCursor(60, 16);
-    display.print("Cnt:");
-    display.print(deviceCount[0]);
-  }
-
-  display.setCursor(0, 28);
-  display.print("Mod1: ");
-  display.println(stateToStr(modules[1].state));
-  if (modules[1].state == SCANNING) {
-    display.setCursor(60, 28);
-    display.print("Cnt:");
-    display.print(deviceCount[1]);
-  }
-
-  display.setCursor(0, 44);
-  display.print("Cmd: ");
-  display.println(lastCommand);
-
-  if (modules[0].state == JAMMING) {
-    display.setCursor(0, 56);
-    display.print("J0 CH:");
-    display.print(modules[0].jamChannel);
-  } else if (modules[1].state == JAMMING) {
-    display.setCursor(0, 56);
-    display.print("J1 CH:");
-    display.print(modules[1].jamChannel);
-  } else if (modules[0].state == SWEEP_JAMMING || modules[1].state == SWEEP_JAMMING) {
-    display.setCursor(0, 56);
-    display.print("SWEEP JAMMING");
+    display.setCursor(64, 49);
+    display.print("Iniciado");
+  } else {
+    // Indicador circular fijo (inactivo)
+    display.drawCircle(57, 53, 3, WHITE);
+    display.setCursor(64, 49);
+    display.print("Detenido");
   }
 
   display.display();
+}
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  FUNCIONES ORIGINALES — SIN MODIFICACIONES
+// ─────────────────────────────────────────────────────────────────────────────
+void two() {
+  if (flagv == 0) {
+    ch1 += 4;
+  } else {
+    ch1 -= 4;
+  }
+  if (flag == 0) {
+    ch += 2;
+  } else {
+    ch -= 2;
+  }
+  if ((ch1 > 79) && (flagv == 0)) {
+    flagv = 1;
+  } else if ((ch1 < 2) && (flagv == 1)) {
+    flagv = 0;
+  }
+  if ((ch > 79) && (flag == 0)) {
+    flag = 1;
+  } else if ((ch < 2) && (flag == 1)) {
+    flag = 0;
+  }
+  radio.setChannel(ch);
+  radio1.setChannel(ch1);
+}
+
+void one() {
+  radio1.setChannel(random(80));
+  radio.setChannel(random(80));
+  delayMicroseconds(random(60));
+}
+
+void start_jamming() {
+  if (!jamming_enabled) {
+    radio.startConstCarrier(RF24_PA_MAX, ch);
+    radio1.startConstCarrier(RF24_PA_MAX, ch1);
+    jamming_enabled = true;
+    Serial.println("JAMMING_STARTED");
+  }
+}
+
+void stop_jamming() {
+  if (jamming_enabled) {
+    radio.stopConstCarrier();
+    radio1.stopConstCarrier();
+    jamming_enabled = false;
+    has_duration = false;
+  }
+  Serial.println("STOPPED");
+}
+
+void process_serial_command(String cmd) {
+  cmd.trim();
+  if (cmd.length() == 0) return;
+
+  if (cmd.startsWith("SWEEP_JAM")) {
+    int firstSpace = cmd.indexOf(' ');
+    int secondSpace = cmd.indexOf(' ', firstSpace + 1);
+    if (secondSpace != -1) {
+      String dur_str = cmd.substring(secondSpace + 1);
+      unsigned long duration_sec = dur_str.toInt();
+
+      if (jamming_enabled) stop_jamming();
+
+      flag = 0;
+      flagv = 0;
+      ch = 45;
+      ch1 = 45;
+      radio.setChannel(ch);
+      radio1.setChannel(ch1);
+
+      if (duration_sec > 0) {
+        stop_time = millis() + duration_sec * 1000;
+        has_duration = true;
+      } else {
+        has_duration = false;
+      }
+
+      start_jamming();
+    }
+  }
+  else if (cmd.startsWith("STOP")) {
+    stop_jamming();
+  }
+  else if (cmd == "STATUS") {
+    if (jamming_enabled) {
+      Serial.print("JAMMING_ACTIVE MODE=");
+      Serial.print(toggleSwitch.getState() == HIGH ? "SWEEP" : "RANDOM");
+      if (has_duration) {
+        unsigned long remaining = (stop_time > millis()) ? (stop_time - millis()) / 1000 : 0;
+        Serial.print(" REMAINING=");
+        Serial.print(remaining);
+      }
+      Serial.println();
+    } else {
+      Serial.println("JAMMING_INACTIVE");
+    }
+  }
+  else {
+    Serial.println("ERROR: Unknown command");
+  }
+}
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  INICIALIZACIÓN
+// ─────────────────────────────────────────────────────────────────────────────
+void setup() {
+  Serial.begin(115200);
+  esp_bt_controller_deinit();
+  esp_wifi_stop();
+  esp_wifi_deinit();
+  esp_wifi_disconnect();
+
+  toggleSwitch.setDebounceTime(50);
+
+  // Inicializar OLED
+  Wire.begin(SDA_PIN, SCL_PIN);
+  if (!display.begin(SSD1306_SWITCHCAPVCC, OLED_ADDR)) {
+    Serial.println("ERROR: Fallo al iniciar OLED");
+    // El firmware continúa funcionando aunque la pantalla falle
+  } else {
+    display.clearDisplay();
+    display.display();
+    updateOLED();   // Muestra estado inicial (Detenido)
+  }
+
+  initHP();
+  initSP();
+
+  Serial.println("Gadget listo. Esperando comando SWEEP_JAM...");
+}
+
+void initSP() {
+  sp = new SPIClass(VSPI);
+  sp->begin();
+  if (radio1.begin(sp)) {
+    Serial.println("SP Started !!!");
+    radio1.setAutoAck(false);
+    radio1.stopListening();
+    radio1.setRetries(0, 0);
+    radio1.setPALevel(RF24_PA_MAX, true);
+    radio1.setDataRate(RF24_2MBPS);
+    radio1.setCRCLength(RF24_CRC_DISABLED);
+    radio1.printPrettyDetails();
+  } else {
+    Serial.println("SP couldn't start !!!");
+  }
+}
+
+void initHP() {
+  hp = new SPIClass(HSPI);
+  hp->begin();
+  if (radio.begin(hp)) {
+    Serial.println("HP Started !!!");
+    radio.setAutoAck(false);
+    radio.stopListening();
+    radio.setRetries(0, 0);
+    radio.setPALevel(RF24_PA_MAX, true);
+    radio.setDataRate(RF24_2MBPS);
+    radio.setCRCLength(RF24_CRC_DISABLED);
+    radio.printPrettyDetails();
+  } else {
+    Serial.println("HP couldn't start !!!");
+  }
+}
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  BUCLE PRINCIPAL — lógica original intacta + refresco de OLED no bloqueante
+// ─────────────────────────────────────────────────────────────────────────────
+void loop() {
+  // 1. Leer comandos serie (original)
+  while (Serial.available()) {
+    char c = Serial.read();
+    if (c == '\n') {
+      process_serial_command(serial_buffer);
+      serial_buffer = "";
+    } else {
+      serial_buffer += c;
+    }
+  }
+
+  // 2. Control de tiempo — apagado automático (original)
+  if (jamming_enabled && has_duration && millis() >= stop_time) {
+    stop_jamming();
+  }
+
+  // 3. Actualizar canales según botón (original)
+  if (jamming_enabled) {
+    toggleSwitch.loop();
+    int state = toggleSwitch.getState();
+    if (state == HIGH) {
+      two();   // barrido
+    } else {
+      one();   // aleatorio
+    }
+  }
+
+  // 4. Refresco de OLED — no bloqueante, cada 200 ms
+  if (millis() - oled_last_update > 200) {
+    oled_last_update = millis();
+    updateOLED();
+  }
 }
