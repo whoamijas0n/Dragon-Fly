@@ -321,6 +321,7 @@ class RedTeamApp(ctk.CTk):
     # MENÚ RECONOCIMIENTO (NMAP) - MODIFICADO
     # ==========================================
     def show_recon_menu(self):
+        self.session_dir_nmap = ""   # <--- NUEVO: resetea la sesión cada vez que se entra
         self.limpiar_main_frame()
         ctk.CTkLabel(self.main_frame, text="RECONOCIMIENTO E INTELIGENCIA", 
                      font=ctk.CTkFont(size=20, weight="bold")).pack(pady=(10,5))
@@ -373,18 +374,20 @@ class RedTeamApp(ctk.CTk):
                      command=self._mostrar_explorador_nmap).pack(pady=15)
 
         self.mostrar_consola()
-
     def _ejecutar_nmap(self, cmd_template):
         target = self.obtener_target()
         if target is None:
             self.escribir_consola("[!] Target inválido. No se ejecutará el comando.")
             return
-        # Crear directorio de sesión con timestamp
-        timestamp = datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
-        self.session_dir_nmap = os.path.join(BASE_DIR_NMAP, f"Auditoria-{timestamp}")
-        os.makedirs(self.session_dir_nmap, exist_ok=True)
+
+        # --- NUEVO: usar misma carpeta durante toda la sesión de Reconocimiento ---
+        if not self.session_dir_nmap:
+            timestamp = datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
+            self.session_dir_nmap = os.path.join(BASE_DIR_NMAP, f"Auditoria-{timestamp}")
+        # -----------------------------------------------------------------------
+
+        os.makedirs(self.session_dir_nmap, exist_ok=True)   # Asegura que la carpeta exista
         comando = cmd_template.replace("{TARGET}", target).replace("{SESSION}", self.session_dir_nmap)
-        # Ejecutar con shell=True (necesario por los pipes internos en algunos comandos)
         self.ejecutar_comando(f"nmap {comando}")
 
     def _mostrar_explorador_nmap(self):
