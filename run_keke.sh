@@ -7,4 +7,4 @@ rm -rf /tmp/.X* /tmp/.x11-unix
 sleep 2
 
 #Iniciamos el servidor grafico 
-startx /usr/bin/python3 /root/keke/keke_Raspberry.py
+startx /usr/bin/python3 /home/user/prue/dragon-fly/main.py
