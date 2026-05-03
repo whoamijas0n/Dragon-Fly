@@ -1,0 +1,3 @@
+# Dependencias mínimas. La mayoría son estándar en Pi OS Lite.
+pyserial>=3.5  # Solo si usas gadget ESP32 BLE
+psutil>=5.9.0  # Opcional: monitoreo avanzado de recursos
