@@ -7,7 +7,7 @@ import signal
 from datetime import datetime
 from gpiozero import Button
 from PIL import Image, ImageDraw, ImageFont
-from luma.core.interface.serial import spidev
+from luma.core.interface.serial import spi
 from luma.oled.device import sh1106
 
 # =========================================================
@@ -49,7 +49,7 @@ class OledMenuEngine:
 
     def __init__(self):
         # 1. Pantalla SPI
-        self.serial = spidev(device=0, gpio_DC=25, gpio_RST=27, bus_speed_hz=8000000)
+        self.serial = spi(device=0, gpio_DC=25, gpio_RST=27, bus_speed_hz=8000000)
         self.device = sh1106(self.serial, rotate=2)
         self.image = Image.new('1', (self.device.width, self.device.height), 0)
         self.draw = ImageDraw.Draw(self.image)
