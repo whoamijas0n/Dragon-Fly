@@ -1,0 +1,123 @@
+Screen {
+    background: #1a1a1a;
+}
+
+#sidebar {
+    width: 30%;
+    background: #111111;
+    border-right: tall #a60000;
+    height: 100%;
+}
+
+#main_panel {
+    width: 70%;
+    height: 100%;
+}
+
+#view_content {
+    height: 60%;
+    padding: 1;
+    overflow-y: auto;
+}
+
+#console {
+    height: 40%;
+    background: #0a0a0a;
+    color: #ff4d4d;
+    border-top: solid #333333;
+}
+
+CmdButton {
+    width: 100%;
+    margin-bottom: 1;
+}
+
+.menu-btn {
+    background: transparent;
+    border: tall #a60000;
+    color: white;
+}
+
+.menu-btn:hover {
+    background: #6b0000;
+}
+
+.red-btn {
+    background: #a60000;
+    color: white;
+    border: none;
+}
+
+.red-btn:hover {
+    background: #6b0000;
+}
+
+.danger-btn {
+    background: #ff9900;
+    color: black;
+    border: none;
+}
+
+.danger-btn:hover {
+    background: #cc7a00;
+}
+
+.back-btn {
+    background: #4a4a4a;
+    color: white;
+}
+
+.title {
+    color: #ff4d4d;
+    text-align: center;
+    text-style: bold;
+    margin-bottom: 1;
+    width: 100%;
+}
+
+.sidebar-title {
+    margin-top: 1;
+}
+
+.subtitle {
+    text-align: center;
+    color: #888888;
+}
+
+.status-label {
+    text-align: center;
+    margin-bottom: 1;
+}
+
+.ascii-art {
+    color: #ff4d4d;
+    text-align: center;
+    text-style: bold;
+    margin-top: 1;
+}
+
+.config-row {
+    height: 3;
+    margin-bottom: 1;
+}
+
+ListSelectModal {
+    align: center middle;
+    background: $background 80%;
+}
+
+.modal-container {
+    width: 80%;
+    height: 80%;
+    background: #1a1a1a;
+    border: solid #ff4d4d;
+    padding: 1;
+}
+
+.modal-title {
+    color: #ff4d4d;
+    text-align: center;
+    text-style: bold;
+    margin-bottom: 1;
+    width: 100%;
+}
