@@ -4,6 +4,10 @@
 # ==========================================
 
 import os
+os.environ["XDG_RUNTIME_DIR"] = "/tmp/runtime-root"
+os.makedirs(os.environ["XDG_RUNTIME_DIR"], exist_ok=True)
+os.environ["SDL_VIDEODRIVER"] = "fbcon" # Si esto falla, cámbialo a "kmsdrm"
+os.environ["SDL_AUDIODRIVER"] = "dummy"
 import sys
 import time
 import subprocess
@@ -84,7 +88,8 @@ class Button:
 # ==========================================
 class RedTeamApp:
     def __init__(self):
-        pygame.init()
+        pygame.display.init()
+        pygame.font.init()
         # Inicializar pantalla completa para el framebuffer
         self.screen = pygame.display.set_mode((WIDTH, HEIGHT), pygame.FULLSCREEN)
         pygame.display.set_caption("Dragon Fly System")
