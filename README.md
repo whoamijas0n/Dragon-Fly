@@ -34,6 +34,10 @@
 
 ### Top contributors:
 
+<div align="center">
+
 <a href="https://github.com/whoamijas0n/DragonFly/graphs/contributors">
   <img src="https://contrib.rocks/image?repo=whoamijas0n/DragonFly" alt="contrib.rocks image" />
 </a>
+
+</div>
