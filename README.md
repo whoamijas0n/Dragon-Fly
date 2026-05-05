@@ -24,9 +24,9 @@
   <span> · </span>
     <a href="https://github.com/whoamijas0n/DragonFly">Documentation</a>
   <span> · </span>
-    <a href="https://github.com/whoamijas0n/DragonFly/issues/">Report Bug</a>
+    <a href="https://github.com/whoamijas0n/DragonFly/issues/new">Report Bug</a>
   <span> · </span>
-    <a href="https://github.com/whoamijas0n/DragonFly/issues/">Request Feature</a>
+    <a href="https://github.com/whoamijas0n/DragonFly/issues/new">Request Feature</a>
   </h4>
 </div>
 
